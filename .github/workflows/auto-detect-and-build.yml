@@ -21,6 +21,9 @@ permissions:
   contents: write
   actions: read
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
 jobs:
   # ====================================================================
   # Step 1: 版本检测（HEAD 请求，~几百字节流量）
@@ -31,7 +34,7 @@ jobs:
       changed: ${{ steps.check.outputs.changed }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
 
       - name: 获取上次构建的版本指纹
         id: cache
@@ -92,7 +95,7 @@ jobs:
       build: ${{ steps.version.outputs.build }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
 
       - name: Install tools
         run: |
@@ -124,7 +127,7 @@ jobs:
           echo "App version: ${VERSION} (build ${BUILD})"
 
       - name: Upload extracted app
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: Codex-extracted
           path: build/extracted/
@@ -192,10 +195,10 @@ jobs:
       github.event.inputs.skip_release != 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4.2.1
         with:
           path: artifacts
 
@@ -206,7 +209,7 @@ jobs:
           du -sh artifacts/*
 
       - name: 创建 Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2.2.2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
           name: "Codex ${{ needs.prepare.outputs.version }}"

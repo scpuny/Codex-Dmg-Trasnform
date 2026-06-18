@@ -4,11 +4,14 @@ on:
   push: { branches: [main] }
   pull_request: { branches: [main] }
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
 jobs:
   verify:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full dmg2img file
       - run: |
           for s in scripts/*.sh; do

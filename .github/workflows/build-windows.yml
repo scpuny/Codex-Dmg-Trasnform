@@ -3,11 +3,14 @@ name: Build Windows x64
 on:
   workflow_call:
 
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
 jobs:
   build:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.0
 
       - name: Install tools
         shell: pwsh
@@ -18,7 +21,7 @@ jobs:
           "C:\Program Files (x86)\7-Zip" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download extracted Codex.app
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4.2.1
         with:
           name: Codex-extracted
           path: build/extracted
@@ -53,7 +56,7 @@ jobs:
           bash scripts/pack-windows.sh "$appPath" packages/windows
 
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: Codex-windows-x64
           path: packages/windows/Codex-*.zip
