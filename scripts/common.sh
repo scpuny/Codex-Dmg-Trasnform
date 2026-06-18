@@ -38,14 +38,13 @@ download_file() {
     mkdir -p "$(dirname "$out_path")"
     log "  Downloading: $(basename "$out_path")"
 
-    local curl_args=(-fsSL)
-    # In container/CI environments with cert issues, try -k as fallback
-    if ! curl "${curl_args[@]}" "$url" -o "$out_path" 2>/dev/null; then
-        log "  Trying with insecure flag..."
-        curl "${curl_args[@]}" -k "$url" -o "$out_path" 2>/dev/null || {
-            log "  Error: Download failed: $url" >&2
-            return 1
-        }
+    # Use -k for SSL cert verification bypass (WSL/CI environments)
+    local curl_args=(-fsSLk)
+    # Also add --retry for reliability on large downloads
+    curl_args+=(--retry 3)
+    if ! curl "${curl_args[@]}" "$url" -o "$out_path"; then
+        log "  Error: Download failed: $url" >&2
+        return 1
     fi
 
     if [ -n "$expected_hash" ]; then

@@ -42,12 +42,25 @@ case "${PLATFORM}-${ARCH}" in
 esac
 
 # Download Electron (standard build, not the custom OpenAI one)
+# Use -k flag to skip SSL cert verification (needed in WSL/CI environments)
 ELEC_URL=$(get_electron_url "$STANDARD_ELECTRON_VERSION" "$PLATFORM" "$ARCH")
 ELEC_FILE="$OUTPUT_DIR/electron-${STANDARD_ELECTRON_VERSION}-${ELEC_PLAT}.zip"
 
 log "Electron ${STANDARD_ELECTRON_VERSION} for ${ELEC_PLAT}..."
 if [ ! -f "$ELEC_FILE" ]; then
-    download_file "$ELEC_URL" "$ELEC_FILE" || log "  (will use cached or skip if unavailable)"
+    mkdir -p "$OUTPUT_DIR"
+    log "  Downloading Electron from: $ELEC_URL"
+    if ! curl -fsSLk "$ELEC_URL" -o "$ELEC_FILE"; then
+        log "  Error: Electron download failed" >&2
+        exit 1
+    fi
+    log "  Downloaded: $(du -h "$ELEC_FILE" | cut -f1)"
+    # Verify it's a valid zip
+    if ! unzip -t "$ELEC_FILE" >/dev/null 2>&1; then
+        log "  Error: Downloaded file is not a valid zip" >&2
+        rm -f "$ELEC_FILE"
+        exit 1
+    fi
 else
     log "  Already cached: $(basename "$ELEC_FILE")"
 fi

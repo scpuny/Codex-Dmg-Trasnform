@@ -1,6 +1,8 @@
 # DMG file (large binary, ~486MB)
 Codex.dmg
 
+.reasonix
+
 # Build output
 build/
 packages/*/electron-*

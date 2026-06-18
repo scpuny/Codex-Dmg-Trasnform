@@ -1,32 +1,37 @@
 name: Build macOS Intel x64
 
 on:
-  workflow_dispatch:
-    inputs:
-      dmg_url:
-        description: 'Override DMG download URL'
-        required: false
-        type: string
   workflow_call:
-    inputs:
-      dmg_url:
-        required: false
-        type: string
 
 jobs:
   build:
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
-      - run: brew install create-dmg 2>/dev/null || true
-      - run: |
-          URL="${{ inputs.dmg_url || 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg' }}"
-          curl -fSL --retry 3 "$URL" -o Codex.dmg
-      - run: ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
-      - run: ./scripts/info.sh --app build/extracted/Codex.app
-      - run: ./scripts/download-runtime.sh --platform darwin --arch x64 --output packages/macos-x64
-      - run: ./scripts/pack-macos-x64.sh --app "$(pwd)/build/extracted/Codex.app" --output-dir packages/macos-x64
-      - uses: actions/upload-artifact@v4
+
+      - name: Install tools
+        run: brew install create-dmg 2>/dev/null || true
+
+      - name: Download extracted Codex.app
+        uses: actions/download-artifact@v4
+        with:
+          name: Codex-extracted
+          path: build/extracted
+
+      - name: Download runtimes
+        run: |
+          ./scripts/download-runtime.sh \
+            --platform darwin --arch x64 \
+            --output packages/macos-x64
+
+      - name: Package
+        run: |
+          ./scripts/pack-macos-x64.sh \
+            --app "$(pwd)/build/extracted/Codex.app" \
+            --output-dir packages/macos-x64
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
           name: Codex-macos-x64
           path: packages/macos-x64/*.dmg

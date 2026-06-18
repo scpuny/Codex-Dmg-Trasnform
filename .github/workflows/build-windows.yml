@@ -1,17 +1,7 @@
 name: Build Windows x64
 
 on:
-  workflow_dispatch:
-    inputs:
-      dmg_url:
-        description: 'Override DMG download URL'
-        required: false
-        type: string
   workflow_call:
-    inputs:
-      dmg_url:
-        required: false
-        type: string
 
 jobs:
   build:
@@ -23,24 +13,16 @@ jobs:
         shell: pwsh
         run: choco install 7zip -y --no-progress 2>$null
 
-      - name: Download Codex.dmg
-        shell: pwsh
-        run: |
-          $url = "${{ inputs.dmg_url || 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg' }}"
-          Write-Host "Downloading from: $url"
-          Invoke-WebRequest -Uri $url -OutFile "Codex.dmg" -TimeoutSec 300
-          Write-Host "Downloaded: $((Get-Item Codex.dmg).Length / 1MB) MB"
+      - name: Download extracted Codex.app
+        uses: actions/download-artifact@v4
+        with:
+          name: Codex-extracted
+          path: build/extracted
 
-      - name: Extract
+      - name: Find extracted app
+        id: find_app
         shell: pwsh
         run: |
-          mkdir build/extracted -Force
-          & "C:\Program Files\7-Zip\7z.exe" x "Codex.dmg" -o"build/dmg_tmp" -y
-          $hfs = Get-ChildItem -Path "build/dmg_tmp" -Recurse -File | Sort-Object Length -Descending | Select-Object -First 1
-          if ($hfs) {
-            & "C:\Program Files\7-Zip\7z.exe" x $hfs.FullName -o"build/extracted" -y
-          }
-          # Create symlink for Codex.app
           $app = Get-ChildItem -Path "build/extracted" -Recurse -Directory -Filter "*.app" | Select-Object -First 1
           if ($app) {
             Write-Host "Found app at: $($app.FullName)"
@@ -66,7 +48,8 @@ jobs:
           }
           bash scripts/pack-windows.sh --app "$appPath" --output-dir packages/windows
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload
+        uses: actions/upload-artifact@v4
         with:
           name: Codex-windows-x64
           path: packages/windows/Codex-*.zip

@@ -1,4 +1,4 @@
-name: Auto-Detect & Build
+name: Auto-Detect, Build & Release
 
 on:
   schedule:
@@ -11,15 +11,21 @@ on:
         required: false
         type: boolean
         default: false
+      skip_release:
+        description: '跳过Release发布（仅构建）'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   # ====================================================================
-  # Job 1: 仅检查远程版本指纹（HEAD 请求，不下载 DMG，~几百字节流量）
+  # Step 1: 版本检测（HEAD 请求，~几百字节流量）
   # ====================================================================
-  check-version:
+  detect-version:
     runs-on: ubuntu-22.04
     outputs:
       changed: ${{ steps.check.outputs.changed }}
@@ -39,14 +45,13 @@ jobs:
       - name: 远程指纹检测（仅 HEAD 请求）
         id: remote
         run: |
-          # 仅请求响应头，不下载文件体
           HEADERS=$(curl -fsSLI --retry 2 \
-            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" 2>/dev/null)
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" 2>/dev/null || true)
           LAST_MODIFIED=$(echo "$HEADERS" | grep -i "last-modified" | head -1 | sed 's/.*: //' | tr -d '\r')
           CONTENT_LENGTH=$(echo "$HEADERS" | grep -i "content-length" | head -1 | sed 's/.*: //' | tr -d '\r')
           FINGERPRINT="${LAST_MODIFIED}:${CONTENT_LENGTH}"
           echo "fingerprint=$FINGERPRINT" >> $GITHUB_OUTPUT
-          echo "Remote: $FINGERPRINT"
+          echo "Remote fingerprint: $FINGERPRINT"
 
       - name: 对比版本
         id: check
@@ -60,92 +65,166 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
           elif [ "$CACHED" != "$REMOTE" ] || [ "${{ inputs.force }}" = "true" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            # 更新缓存
             echo "$REMOTE" > .codex-version
             git config user.name "codex-bot"
             git config user.email "bot@openai.com"
             git add .codex-version
             git commit -m "chore: update Codex fingerprint" || true
-            git push
+            git push || true
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
-  # ====================================================================
-  # Job 2: 仅当版本变化时，才下载 486MB DMG 并构建
-  # ====================================================================
-  build-all:
-    needs: check-version
-    if: needs.check-version.outputs.changed == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-amd64
-            workflow: build-linux-amd64.yml
-            runner: ubuntu-22.04
-          - target: linux-arm64
-            workflow: build-linux-arm64.yml
-            runner: ubuntu-22.04-arm
-          - target: macos-x64
-            workflow: build-macos-x64.yml
-            runner: macos-13
-          - target: windows-x64
-            workflow: build-windows.yml
-            runner: windows-2022
-
-    # 注意：下面用 secrets: inherit 传递 DMG 下载 URL（固定地址，无需密码）
-    uses: ./.github/workflows/${{ matrix.workflow }}
-    with:
-      dmg_url: 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg'
+      - name: 输出结果
+        run: |
+          echo "Changed: ${{ steps.check.outputs.changed }}"
+          echo "Fingerprint: ${{ steps.remote.outputs.fingerprint }}"
 
   # ====================================================================
-  # Job 3: 收集所有产物，创建 GitHub Release
+  # Step 2: 下载 DMG + 提取 + 获取版本号（只下载一次！）
   # ====================================================================
-  publish:
-    needs: [check-version, build-all]
-    # 即使 build-all 因策略跳过（比如只有部分平台成功），也尝试发布
+  prepare:
+    needs: detect-version
+    if: needs.detect-version.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full dmg2img
+
+      - name: Download Codex.dmg
+        run: |
+          echo "Downloading Codex.dmg (~486MB)..."
+          curl -fSLk --retry 3 \
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
+            -o Codex.dmg
+          echo "Downloaded: $(du -h Codex.dmg | cut -f1)"
+
+      - name: Extract Codex.app
+        run: |
+          ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
+          ls -la build/extracted/Codex.app
+
+      - name: 提取版本号
+        id: version
+        run: |
+          VERSION=$(./scripts/info.sh --app build/extracted/Codex.app 2>/dev/null \
+            | grep "CFBundleShortVersionString" | awk '{print $2}')
+          BUILD=$(./scripts/info.sh --app build/extracted/Codex.app 2>/dev/null \
+            | grep "CFBundleVersion" | awk '{print $2}')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "build=${BUILD}" >> $GITHUB_OUTPUT
+          echo "App version: ${VERSION} (build ${BUILD})"
+
+      - name: Upload extracted app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-extracted
+          path: build/extracted/
+          retention-days: 1
+
+  # ====================================================================
+  # Step 3: 并行构建各平台（复用提取产物，不再重复下载 DMG）
+  # ====================================================================
+  build-macos-x64:
+    needs: [prepare]
+    uses: ./.github/workflows/build-macos-x64.yml
+
+  build-linux-amd64:
+    needs: [prepare]
+    uses: ./.github/workflows/build-linux-amd64.yml
+
+  build-linux-arm64:
+    needs: [prepare]
+    uses: ./.github/workflows/build-linux-arm64.yml
+
+  build-windows-x64:
+    needs: [prepare]
+    uses: ./.github/workflows/build-windows.yml
+
+  # ====================================================================
+  # Step 4: 等待所有构建完成
+  # ====================================================================
+  build-complete:
+    needs: [build-macos-x64, build-linux-amd64, build-linux-arm64, build-windows-x64]
+    runs-on: ubuntu-22.04
     if: always()
+    outputs:
+      all_success: ${{ steps.check.outputs.all_success }}
+
+    steps:
+      - name: 检查构建结果
+        id: check
+        run: |
+          ALL_SUCCESS=true
+          for job in build-macos-x64 build-linux-amd64 build-linux-arm64 build-windows-x64; do
+            STATUS="${{ needs.$job.result }}"
+            echo "  $job: $STATUS"
+            if [ "$STATUS" != "success" ]; then
+              ALL_SUCCESS=false
+            fi
+          done
+          echo "all_success=$ALL_SUCCESS" >> $GITHUB_OUTPUT
+
+  # ====================================================================
+  # Step 5: 发布到 GitHub Release
+  # ====================================================================
+  release:
+    needs: [detect-version, prepare, build-complete]
+    if: >-
+      needs.detect-version.outputs.changed == 'true' &&
+      needs.build-complete.outputs.all_success == 'true' &&
+      github.event.inputs.skip_release != 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
-        with: { path: artifacts }
-        continue-on-error: true
-
-      - name: 生成版本 Tag（基于构建日期）
-        id: version
-        run: |
-          DATE=$(date -u +%Y%m%d-%H%M%S)
-          echo "tag=build-${DATE}" >> $GITHUB_OUTPUT
-
-      - name: 生成 Release 说明
-        id: body
-        run: |
-          cat > release_body.md << EOF
-          ## Codex Cross-Platform Build
-
-          Automatically built from official Codex.dmg.
-
-          | Platform | Status |
-          |----------|--------|
-          | macOS Intel | ✅ included |
-          | Linux amd64 | ✅ included |
-          | Linux ARM64 | ✅ included |
-          | Windows x64 | ✅ included |
-
-          **注意**：
-          - 平台后端二进制 (codex, codex_chronicle, cua_node) 需单独提供
-          - Electron 使用社区标准版替代 OpenAI 定制版
-          - 原生 Node 模块需按平台重新编译
-          EOF
-
-      - uses: softprops/action-gh-release@v2
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "Codex Build ${{ steps.version.outputs.tag }}"
-          body_path: release_body.md
-          files: artifacts/**/*
-          draft: false
+          path: artifacts
+
+      - name: 显示产物
+        run: |
+          find artifacts -type f | sort
+          echo "---"
+          du -sh artifacts/*
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: "Codex ${{ needs.prepare.outputs.version }}"
+          body: |
+            ## Codex Cross-Platform Release ${{ needs.prepare.outputs.version }}
+
+            Automatically built from [official Codex.dmg](https://persistent.oaistatic.com/codex-app-prod/Codex.dmg)
+
+            **Auto-detected on**: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+
+            | Platform | Architecture | Artifact |
+            |----------|-------------|----------|
+            | macOS | Intel (x64) | `.dmg` |
+            | Linux | amd64 | `.deb` |
+            | Linux | arm64 | `.deb` |
+            | Windows | x64 | `.zip` |
+
+            ---
+
+            **注意**：
+            - 平台后端二进制 (`codex`, `codex_chronicle`, `cua_node`) 需单独提供
+            - Electron 使用社区标准版替代 OpenAI 定制版
+            - 原生 Node 模块需按平台重新编译
+          files: |
+            artifacts/**/Codex-*.deb
+            artifacts/**/Codex-*.dmg
+            artifacts/**/Codex-*.zip
+          draft: true
           prerelease: true
