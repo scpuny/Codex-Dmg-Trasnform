@@ -11,7 +11,11 @@ jobs:
 
       - name: Install tools
         shell: pwsh
-        run: choco install 7zip -y --no-progress 2>$null
+        run: |
+          choco install 7zip -y --no-progress 2>$null
+          # Add 7zip to PATH
+          $env:Path += ';C:\Program Files\7-Zip'
+          [Environment]::SetEnvironmentVariable('Path', $env:Path, 'Process')
 
       - name: Download extracted Codex.app
         uses: actions/download-artifact@v4

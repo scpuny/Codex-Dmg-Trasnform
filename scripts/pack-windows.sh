@@ -63,7 +63,7 @@ set ELECTRON_IS_DEV=0
 start "" "%~dp0Codex.exe" "%~dp0resources\app.asar" %*
 BAT
 
-# Portable ZIP
-(cd "$BUILD_DIR" && zip -qr "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")")
+# Portable ZIP — use 7z since zip may not be available
+(cd "$BUILD_DIR" && 7z a "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")" > /dev/null 2>&1 || zip -qr "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")")
 log "=== Windows complete ==="
 ls -lh "$OUTPUT_DIR/"
