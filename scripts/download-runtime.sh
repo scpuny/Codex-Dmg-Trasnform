@@ -42,25 +42,23 @@ case "${PLATFORM}-${ARCH}" in
 esac
 
 # Download Electron (standard build, not the custom OpenAI one)
-# Use -k flag to skip SSL cert verification (needed in WSL/CI environments)
-ELEC_URL=$(get_electron_url "$STANDARD_ELECTRON_VERSION" "$PLATFORM" "$ARCH")
 ELEC_FILE="$OUTPUT_DIR/electron-${STANDARD_ELECTRON_VERSION}-${ELEC_PLAT}.zip"
 
 log "Electron ${STANDARD_ELECTRON_VERSION} for ${ELEC_PLAT}..."
 if [ ! -f "$ELEC_FILE" ]; then
-    mkdir -p "$OUTPUT_DIR"
-    log "  Downloading Electron from: $ELEC_URL"
-    if ! curl -fsSLk --connect-timeout 30 --max-time 600 "$ELEC_URL" -o "$ELEC_FILE"; then
+    ELEC_OFFICIAL_URL=$(get_electron_url "$STANDARD_ELECTRON_VERSION" "$PLATFORM" "$ARCH")
+    ELEC_MIRROR_URL=$(get_electron_mirror_url "$STANDARD_ELECTRON_VERSION" "$PLATFORM" "$ARCH")
+    if ! download_with_mirror_fallback "$ELEC_MIRROR_URL" "$ELEC_OFFICIAL_URL" "$ELEC_FILE" "Electron ${STANDARD_ELECTRON_VERSION}"; then
         log "  Error: Electron download failed" >&2
         exit 1
     fi
-    log "  Downloaded: $(du -h "$ELEC_FILE" | cut -f1)"
     # Verify it's a valid zip
     if ! unzip -t "$ELEC_FILE" >/dev/null 2>&1; then
         log "  Error: Downloaded file is not a valid zip" >&2
         rm -f "$ELEC_FILE"
         exit 1
     fi
+    log "  ✅ Electron zip verified"
 else
     log "  Already cached: $(basename "$ELEC_FILE")"
 fi
@@ -73,12 +71,15 @@ case "$PLATFORM" in
     win32)  NODE_OS="win"    ;;
 esac
 
-NODE_URL=$(get_nodejs_url "$NODE_VERSION" "$NODE_OS" "$ARCH")
-NODE_FILE="$OUTPUT_DIR/$(basename "$NODE_URL")"
+NODE_FILE="$OUTPUT_DIR/node-v${NODE_VERSION}-${NODE_PLAT}.tar.xz"
+[ "$PLATFORM" = "win32" ] && NODE_FILE="$OUTPUT_DIR/node-v${NODE_VERSION}-${NODE_PLAT}.zip"
 
 log "Node.js ${NODE_VERSION} for ${NODE_PLAT}..."
 if [ ! -f "$NODE_FILE" ]; then
-    download_file "$NODE_URL" "$NODE_FILE" || log "  (will use cached or skip if unavailable)"
+    NODE_OFFICIAL_URL=$(get_nodejs_url "$NODE_VERSION" "$NODE_OS" "$ARCH")
+    NODE_MIRROR_URL=$(get_nodejs_mirror_url "$NODE_VERSION" "$NODE_OS" "$ARCH")
+    download_with_mirror_fallback "$NODE_MIRROR_URL" "$NODE_OFFICIAL_URL" "$NODE_FILE" "Node.js ${NODE_VERSION}" || \
+        log "  ⚠️  Node.js download had issues (will use cached or skip if unavailable)"
 else
     log "  Already cached: $(basename "$NODE_FILE")"
 fi
