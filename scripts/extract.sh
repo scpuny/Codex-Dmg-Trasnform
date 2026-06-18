@@ -71,8 +71,6 @@ case "$OS" in
         ;;
     Linux)
         echo "==> Linux — extracting DMG directly with 7z..."
-        # 7z ≥ 16.02 原生支持 DMG 格式，可直接提取文件
-        # 如果 7z 直接提取失败，则回退到 dmg2img + mount 方案
         TMP_EXTRACT="$(mktemp -d)"
         if 7z x "$DMG_PATH" -o"$TMP_EXTRACT" -y > /dev/null 2>&1; then
             # 7z 直接提取成功
@@ -85,24 +83,71 @@ case "$OS" in
                 cp -a "$TMP_EXTRACT"/* "$OUTPUT_DIR/" 2>/dev/null || true
             fi
         else
-            echo "==> 7z direct extraction failed, trying dmg2img + mount..."
-            IMG_FILE="$(mktemp).img"
-            dmg2img "$DMG_PATH" "$IMG_FILE" 2>/dev/null
-            MNT_DIR="$(mktemp -d)"
-            # 检测 HFS+ 分区偏移量
-            OFFSET=$(fdisk -l "$IMG_FILE" 2>/dev/null | grep "Apple_HFS" | awk '{print $2 * 512}' || echo "")
-            if [ -z "$OFFSET" ]; then
-                OFFSET=$(partx -o START -n1 -g "$IMG_FILE" 2>/dev/null | awk '{print $1 * 512}' || echo "0")
+            echo "==> 7z direct extraction failed, trying alternative methods..."
+            # 方法1: 尝试使用 dmg2img 转换后挂载
+            if command -v dmg2img &>/dev/null; then
+                echo "==> Trying dmg2img + mount..."
+                IMG_FILE="$(mktemp).img"
+                dmg2img "$DMG_PATH" "$IMG_FILE" 2>/dev/null || true
+                MNT_DIR="$(mktemp -d)"
+                # 尝试多种挂载方式
+                MOUNT_OK=false
+                # 尝试 HFS+ (传统 macOS DMG)
+                if command -v mount.hfsplus &>/dev/null; then
+                    # 检测 HFS+ 分区偏移量
+                    OFFSET=$(fdisk -l "$IMG_FILE" 2>/dev/null | grep "Apple_HFS" | awk '{print $2 * 512}' || echo "")
+                    if [ -z "$OFFSET" ]; then
+                        OFFSET=$(partx -o START -n1 -g "$IMG_FILE" 2>/dev/null | awk '{print $1 * 512}' || echo "0")
+                    fi
+                    if [ "$OFFSET" != "0" ]; then
+                        if sudo mount -o loop,ro,offset=$OFFSET -t hfsplus "$IMG_FILE" "$MNT_DIR" 2>/dev/null; then
+                            MOUNT_OK=true
+                        fi
+                    fi
+                fi
+                # 尝试 APFS (新式 macOS DMG)
+                if [ "$MOUNT_OK" = false ] && command -v apfs-fuse &>/dev/null; then
+                    if apfs-fuse "$IMG_FILE" "$MNT_DIR" 2>/dev/null; then
+                        MOUNT_OK=true
+                    fi
+                fi
+                if [ "$MOUNT_OK" = true ]; then
+                    rsync -a "$MNT_DIR/" "$OUTPUT_DIR/"
+                    sudo umount "$MNT_DIR" 2>/dev/null || true
+                fi
+                rm -f "$IMG_FILE"
+                rm -rf "$MNT_DIR"
             fi
-            if sudo mount -o loop,ro,offset=$OFFSET -t hfsplus "$IMG_FILE" "$MNT_DIR" 2>/dev/null; then
-                rsync -a "$MNT_DIR/" "$OUTPUT_DIR/"
-                sudo umount "$MNT_DIR" 2>/dev/null || true
-            else
-                echo "Error: Cannot mount DMG on Linux. Install hfsprogs: sudo apt-get install hfsprogs" >&2
+            # 方法2: 尝试使用 Python 的 dmg 库提取
+            if [ -z "$(ls -A "$OUTPUT_DIR" 2>/dev/null)" ] && python3 -c "import dmg" 2>/dev/null; then
+                echo "==> Trying Python dmg module..."
+                python3 -c "
+import dmg, sys, os
+dmg.extract_dmg('$DMG_PATH', '$OUTPUT_DIR')
+" 2>/dev/null || true
+            fi
+            # 方法3: 尝试使用 libguestfs
+            if [ -z "$(ls -A "$OUTPUT_DIR" 2>/dev/null)" ] && command -v guestmount &>/dev/null; then
+                echo "==> Trying libguestfs (guestmount)..."
+                MNT_DIR="$(mktemp -d)"
+                if guestmount -a "$DMG_PATH" -m /dev/sda --ro "$MNT_DIR" 2>/dev/null; then
+                    rsync -a "$MNT_DIR/" "$OUTPUT_DIR/"
+                    guestunmount "$MNT_DIR" 2>/dev/null || true
+                fi
+                rm -rf "$MNT_DIR"
+            fi
+            # 最终检查
+            if [ -z "$(ls -A "$OUTPUT_DIR" 2>/dev/null)" ]; then
+                echo "Error: Cannot extract DMG on Linux." >&2
+                echo "Install required packages for DMG support:" >&2
+                echo "  sudo apt-get install -y p7zip-full hfsprogs dmg2img" >&2
+                echo "  # For APFS DMGs (macOS Big Sur+), also install:" >&2
+                echo "  sudo apt-get install -y fuse libfuse-dev" >&2
+                echo "  git clone https://github.com/eafer/apfs-fuse.git && cd apfs-fuse && mkdir build && cd build && cmake .. && make && sudo make install" >&2
+                echo "  # Or via snap:" >&2
+                echo "  sudo snap install apfs-fuse" >&2
                 exit 1
             fi
-            rm -f "$IMG_FILE"
-            rm -rf "$MNT_DIR"
         fi
         rm -rf "$TMP_EXTRACT"
         ;;
