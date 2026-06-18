@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: |
@@ -15,7 +15,7 @@ jobs:
           sudo apt-get install -y -qq p7zip-full dmg2img dpkg-dev
 
       - name: Download extracted Codex.app
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: Codex-extracted
           path: build/extracted
@@ -33,7 +33,7 @@ jobs:
             packages/linux-arm64
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Codex-linux-arm64
           path: packages/linux-arm64/Codex_*.deb

@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: |
@@ -15,7 +15,7 @@ jobs:
           sudo apt-get install -y -qq p7zip-full dmg2img dpkg-dev
 
       - name: Download extracted Codex.app
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: Codex-extracted
           path: build/extracted
@@ -33,14 +33,14 @@ jobs:
             packages/linux-amd64
 
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Codex-linux-amd64
           path: packages/linux-amd64/Codex_*.deb
           retention-days: 30
 
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Codex-linux-amd64-archive
           path: packages/linux-amd64/Codex-*.tar.gz
