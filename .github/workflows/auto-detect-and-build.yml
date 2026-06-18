@@ -287,7 +287,7 @@ jobs:
 
             ---
 
-            **注意**：
+            **注意**:
             - 平台后端二进制 (`codex`, `codex_chronicle`, `cua_node`) 需单独提供
             - Electron 使用社区标准版替代 OpenAI 定制版
             - 原生 Node 模块需按平台重新编译
