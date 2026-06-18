@@ -9,9 +9,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
-        run: brew install create-dmg 2>/dev/null || true
-
       - name: Download extracted Codex.app
         uses: actions/download-artifact@v4
         with:

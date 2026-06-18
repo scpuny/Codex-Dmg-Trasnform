@@ -13,9 +13,9 @@ jobs:
         shell: pwsh
         run: |
           choco install 7zip -y --no-progress 2>$null
-          # Add 7zip to PATH
-          $env:Path += ';C:\Program Files\7-Zip'
-          [Environment]::SetEnvironmentVariable('Path', $env:Path, 'Process')
+          # Add 7zip to GITHUB_PATH so it persists across steps
+          "C:\Program Files\7-Zip" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "C:\Program Files (x86)\7-Zip" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download extracted Codex.app
         uses: actions/download-artifact@v4

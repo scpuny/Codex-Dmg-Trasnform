@@ -50,7 +50,7 @@ log "Electron ${STANDARD_ELECTRON_VERSION} for ${ELEC_PLAT}..."
 if [ ! -f "$ELEC_FILE" ]; then
     mkdir -p "$OUTPUT_DIR"
     log "  Downloading Electron from: $ELEC_URL"
-    if ! curl -fsSLk "$ELEC_URL" -o "$ELEC_FILE"; then
+    if ! curl -fsSLk --connect-timeout 30 --max-time 600 "$ELEC_URL" -o "$ELEC_FILE"; then
         log "  Error: Electron download failed" >&2
         exit 1
     fi

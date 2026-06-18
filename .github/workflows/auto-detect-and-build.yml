@@ -45,7 +45,7 @@ jobs:
       - name: 远程指纹检测（仅 HEAD 请求）
         id: remote
         run: |
-          HEADERS=$(curl -fsSLI --retry 2 \
+          HEADERS=$(curl -fsSLI --connect-timeout 15 --max-time 30 --retry 2 \
             "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" 2>/dev/null || true)
           LAST_MODIFIED=$(echo "$HEADERS" | grep -i "last-modified" | head -1 | sed 's/.*: //' | tr -d '\r')
           CONTENT_LENGTH=$(echo "$HEADERS" | grep -i "content-length" | head -1 | sed 's/.*: //' | tr -d '\r')

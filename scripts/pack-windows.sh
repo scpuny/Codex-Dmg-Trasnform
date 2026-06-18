@@ -63,7 +63,25 @@ set ELECTRON_IS_DEV=0
 start "" "%~dp0Codex.exe" "%~dp0resources\app.asar" %*
 BAT
 
-# Portable ZIP — use 7z since zip may not be available
-(cd "$BUILD_DIR" && 7z a "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")" > /dev/null 2>&1 || zip -qr "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")")
+# Portable ZIP — prefer 7z, fall back to zip or PowerShell Compress-Archive
+# On Windows (Git Bash), ensure 7z is in PATH
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    export PATH="$PATH:/c/Program Files/7-Zip:/c/Program Files/7-Zip/:/c/Program Files (x86)/7-Zip:/c/Program Files (x86)/7-Zip/"
+    ;;
+esac
+
+if command -v 7z &>/dev/null; then
+    (cd "$BUILD_DIR" && 7z a "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")" > /dev/null 2>&1)
+elif command -v zip &>/dev/null; then
+    (cd "$BUILD_DIR" && zip -qr "$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip" "$(basename "$WIN_DIR")")
+elif command -v pwsh &>/dev/null; then
+    pwsh -NoProfile -Command "Compress-Archive -Path '$BUILD_DIR/$(basename "$WIN_DIR")' -DestinationPath '$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip' -Force"
+elif command -v powershell &>/dev/null; then
+    powershell -NoProfile -Command "Compress-Archive -Path '$BUILD_DIR/$(basename "$WIN_DIR")' -DestinationPath '$OUTPUT_DIR/Codex-${VERSION}-win32-x64-portable.zip' -Force"
+else
+    log "Error: no archiving tool found (7z, zip, or powershell)"
+    exit 1
+fi
 log "=== Windows complete ==="
 ls -lh "$OUTPUT_DIR/"

@@ -40,6 +40,8 @@ download_file() {
 
     # Use -k for SSL cert verification bypass (WSL/CI environments)
     local curl_args=(-fsSLk)
+    # Add timeout to prevent CI hangs
+    curl_args+=(--connect-timeout 30 --max-time 600)
     # Also add --retry for reliability on large downloads
     curl_args+=(--retry 3)
     if ! curl "${curl_args[@]}" "$url" -o "$out_path"; then
@@ -124,7 +126,7 @@ download_codex_dmg() {
     
     # Use resume support for large downloads
     if command -v curl &>/dev/null; then
-        curl -fSLk -C - --retry 3 "$CODEX_DMG_URL" -o "$out_path" || {
+        curl -fSLk -C - --connect-timeout 30 --max-time 1200 --retry 3 "$CODEX_DMG_URL" -o "$out_path" || {
             log "Error: Download failed" >&2
             return 1
         }

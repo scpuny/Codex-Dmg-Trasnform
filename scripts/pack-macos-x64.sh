@@ -65,17 +65,15 @@ if [ -f "$CUA_ARCHIVE" ]; then
 JSON
 fi
 
-# Create .dmg
-if command -v create-dmg &>/dev/null; then
-    DMG_PATH="$OUTPUT_DIR/Codex-${VERSION}-macos-x64.dmg"
-    create-dmg --volname "Codex" --window-pos 200 120 --window-size 800 400 --icon-size 100 \
-        --icon "Codex.app" 200 190 --app-drop-link 600 185 "$DMG_PATH" "$BUILD_DIR/Codex.app" 2>/dev/null || \
-    hdiutil create -volname "Codex" -srcfolder "$BUILD_DIR/Codex.app" -ov -format UDZO "$DMG_PATH" 2>/dev/null
-elif command -v hdiutil &>/dev/null; then
-    hdiutil create -volname "Codex" -srcfolder "$BUILD_DIR/Codex.app" -ov -format UDZO "$OUTPUT_DIR/Codex-${VERSION}-macos-x64.dmg"
+# Create .dmg (use hdiutil exclusively — built into macOS, reliable)
+# Avoid create-dmg as it can hang on CI runners
+DMG_PATH="$OUTPUT_DIR/Codex-${VERSION}-macos-x64.dmg"
+log "Creating DMG with hdiutil..."
+if ! hdiutil create -volname "Codex" -srcfolder "$BUILD_DIR/Codex.app" -ov -format UDZO "$DMG_PATH" 2>&1; then
+    log "Warning: DMG creation failed, falling back to tar.gz"
 fi
 
-# Archive fallback
+# Also produce tar.gz as a universal fallback
 tar czf "$OUTPUT_DIR/Codex-${VERSION}-macos-x64.tar.gz" -C "$BUILD_DIR" "Codex.app"
 
 log "=== macOS Intel complete ==="
