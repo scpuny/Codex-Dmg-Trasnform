@@ -312,6 +312,10 @@ jobs:
           echo "---"
           du -sh artifacts/*
 
+      - name: 获取构建时间
+        id: build_time
+        run: echo "timestamp=$(date -u +'%a, %d %b %Y %H:%M:%S GMT')" >> $GITHUB_OUTPUT
+
       - name: 创建 Release
         uses: softprops/action-gh-release@v3.0.0
         with:
@@ -322,7 +326,7 @@ jobs:
 
             Automatically built from [official Codex.dmg](https://persistent.oaistatic.com/codex-app-prod/Codex.dmg)
 
-            **Auto-detected on**: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+            **Auto-detected on**: ${{ steps.build_time.outputs.timestamp }}
 
             | Platform | Architecture | Artifact |
             |----------|-------------|----------|
