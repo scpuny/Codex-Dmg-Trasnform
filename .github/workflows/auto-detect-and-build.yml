@@ -163,11 +163,19 @@ jobs:
       - name: 检查构建结果
         id: check
         run: |
+          MACOS="${{ needs.build-macos-x64.result }}"
+          LINUX_AMD="${{ needs.build-linux-amd64.result }}"
+          LINUX_ARM="${{ needs.build-linux-arm64.result }}"
+          WIN="${{ needs.build-windows-x64.result }}"
+
+          echo "macos-x64: $MACOS"
+          echo "linux-amd64: $LINUX_AMD"
+          echo "linux-arm64: $LINUX_ARM"
+          echo "windows-x64: $WIN"
+
           ALL_SUCCESS=true
-          for job in build-macos-x64 build-linux-amd64 build-linux-arm64 build-windows-x64; do
-            STATUS="${{ needs.$job.result }}"
-            echo "  $job: $STATUS"
-            if [ "$STATUS" != "success" ]; then
+          for status in "$MACOS" "$LINUX_AMD" "$LINUX_ARM" "$WIN"; do
+            if [ "$status" != "success" ]; then
               ALL_SUCCESS=false
             fi
           done

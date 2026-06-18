@@ -222,6 +222,39 @@ cat > "$CUA_DIR/manifest.json" <<JSON
 JSON
 log "  Node.js 已安装"
 
+# --- 原生模块重新编译（node-gyp rebuild） ---
+UNPACKED="$LINUX_DIR/resources/app.asar.unpacked/node_modules"
+if [ -d "$UNPACKED" ]; then
+    NODE_BIN="$CUA_DIR/bin/node"
+    log "  使用 Node.js: $($NODE_BIN --version) 重新编译原生模块..."
+
+    # 安装 node-gyp
+    "$NODE_BIN" -e "require('node-gyp')" 2>/dev/null || npm install -g node-gyp 2>/dev/null || true
+
+    for mod_dir in "$UNPACKED"/*/; do
+        mod="$(basename "$mod_dir")"
+        pkg="$mod_dir/package.json"
+        [ ! -f "$pkg" ] && continue
+
+        # 检查是否是原生模块
+        has_native=false
+        grep -q '"gypfile"' "$pkg" 2>/dev/null && has_native=true
+        [ -f "$mod_dir/binding.gyp" ] && has_native=true
+        grep -q '"binary"' "$pkg" 2>/dev/null && has_native=true
+        find "$mod_dir" -name '*.node' -type f 2>/dev/null | head -1 | grep -q . && has_native=true
+
+        if $has_native; then
+            log "  重新编译: $mod"
+            (
+                cd "$mod_dir"
+                rm -rf build/ prebuilds/ 2>/dev/null || true
+                "$NODE_BIN" "$(which node-gyp)" rebuild --arch=x64 2>&1 | tail -5 || log "    ⚠️  $mod 编译警告"
+            )
+        fi
+    done
+    log "  原生模块重新编译完成"
+fi
+
 # --- 图标 ---
 cp "$APP_PATH/Contents/Resources/icon.png" "$LINUX_DIR/Codex.png"
 log "  图标已安装"
