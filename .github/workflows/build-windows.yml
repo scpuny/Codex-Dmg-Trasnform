@@ -46,7 +46,7 @@ jobs:
             $appPath = Get-ChildItem -Path "build/extracted" -Recurse -Directory -Filter "*.app" | Select-Object -First 1
             $appPath = $appPath.FullName
           }
-          bash scripts/pack-windows.sh --app "$appPath" --output-dir packages/windows
+          bash scripts/pack-windows.sh "$appPath" packages/windows
 
       - name: Upload
         uses: actions/upload-artifact@v4

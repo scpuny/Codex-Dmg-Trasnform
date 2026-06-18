@@ -27,8 +27,8 @@ jobs:
       - name: Package
         run: |
           ./scripts/pack-macos-x64.sh \
-            --app "$(pwd)/build/extracted/Codex.app" \
-            --output-dir packages/macos-x64
+            "$(pwd)/build/extracted/Codex.app" \
+            packages/macos-x64
 
       - name: Upload
         uses: actions/upload-artifact@v4
