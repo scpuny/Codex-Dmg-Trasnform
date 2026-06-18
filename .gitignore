@@ -12,6 +12,8 @@ packages/*/*.deb
 packages/*/*.AppImage
 packages/*/*.exe
 packages/*/*.msi
+packages/*/*.xz
+packages/*/*.gz
 
 # Node modules
 node_modules/
