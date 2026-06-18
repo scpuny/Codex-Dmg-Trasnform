@@ -100,7 +100,15 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq p7zip-full dmg2img hfsprogs
+          sudo apt-get install -y -qq p7zip-full dmg2img hfsprogs fuse libfuse-dev cmake build-essential
+          # 构建并安装 apfs-fuse（用于提取 APFS 格式 DMG）
+          git clone --depth 1 https://github.com/eafer/apfs-fuse.git /tmp/apfs-fuse
+          cd /tmp/apfs-fuse
+          mkdir build && cd build
+          cmake ..
+          make -j$(nproc)
+          sudo make install
+          cd /tmp && rm -rf /tmp/apfs-fuse
 
       - name: Download Codex.dmg
         run: |
