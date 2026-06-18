@@ -160,18 +160,36 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
 
+      # ========== 缓存 Codex.dmg（避免每次下载 486MB） ==========
+      - name: Cache Codex.dmg
+        id: cache-dmg
+        uses: actions/cache@v5
+        with:
+          path: Codex.dmg
+          key: codex-dmg-${{ hashFiles('.codex-version') }}
+
+      - name: Download Codex.dmg (from OpenAI CDN, ~486MB)
+        if: steps.cache-dmg.outputs.cache-hit != 'true'
+        run: |
+          source scripts/common.sh
+          download_codex_dmg "${{ github.workspace }}/Codex.dmg"
+
+      # ========== 提取 Codex.app（用 macOS 原生 hdiutil） ==========
+      - name: Extract Codex.app
+        run: |
+          # macOS 下 hdiutil attach + rsync 比下载 1GB artifact 快得多
+          ./scripts/extract.sh \
+            --dmg "${{ github.workspace }}/Codex.dmg" \
+            --output-dir "${{ github.workspace }}/build/extracted"
+          ls -la "${{ github.workspace }}/build/extracted/Codex.app"
+
+      # ========== 缓存运行时（Electron + Node.js） ==========
       - name: Cache macOS runtimes
         id: cache-macos
         uses: actions/cache@v5
         with:
           path: packages/macos-x64
           key: macos-runtime-${{ hashFiles('scripts/download-runtime.sh', 'scripts/common.sh') }}
-
-      - name: Download extracted Codex.app
-        uses: actions/download-artifact@v4.2.1
-        with:
-          name: Codex-extracted
-          path: build/extracted
 
       - name: Download runtimes (if not cached)
         if: steps.cache-macos.outputs.cache-hit != 'true'
@@ -183,13 +201,13 @@ jobs:
       - name: Pre-check
         run: |
           ./scripts/pack-macos-x64.sh --check \
-            --app "$(pwd)/build/extracted/Codex.app" \
+            --app "${{ github.workspace }}/build/extracted/Codex.app" \
             --output-dir packages/macos-x64
 
       - name: Package
         run: |
           ./scripts/pack-macos-x64.sh \
-            "$(pwd)/build/extracted/Codex.app" \
+            "${{ github.workspace }}/build/extracted/Codex.app" \
             packages/macos-x64
 
       - name: Upload
