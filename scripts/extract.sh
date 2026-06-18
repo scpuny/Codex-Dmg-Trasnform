@@ -70,14 +70,40 @@ case "$OS" in
         rmdir "$MNT"
         ;;
     Linux)
-        echo "==> Linux — converting DMG to IMG..."
-        IMG_FILE="$(mktemp).img"
-        dmg2img "$DMG_PATH" "$IMG_FILE" 2>/dev/null
-        echo "==> Extracting files from disk image..."
+        echo "==> Linux — extracting DMG directly with 7z..."
+        # 7z ≥ 16.02 原生支持 DMG 格式，可直接提取文件
+        # 如果 7z 直接提取失败，则回退到 dmg2img + mount 方案
         TMP_EXTRACT="$(mktemp -d)"
-        7z x "$IMG_FILE" -o"$TMP_EXTRACT" -y > /dev/null 2>&1
-        cp -a "$TMP_EXTRACT"/* "$OUTPUT_DIR/" 2>/dev/null || true
-        rm -f "$IMG_FILE"
+        if 7z x "$DMG_PATH" -o"$TMP_EXTRACT" -y > /dev/null 2>&1; then
+            # 7z 直接提取成功
+            # 有时文件会在一个子目录下（如 "Codex Installer/Codex.app"）
+            find "$TMP_EXTRACT" -maxdepth 1 -type d ! -path "$TMP_EXTRACT" | while read -r dir; do
+                cp -a "$dir"/* "$OUTPUT_DIR/" 2>/dev/null || true
+            done
+            # 如果上面没取到，直接复制所有
+            if [ -z "$(ls -A "$OUTPUT_DIR")" ]; then
+                cp -a "$TMP_EXTRACT"/* "$OUTPUT_DIR/" 2>/dev/null || true
+            fi
+        else
+            echo "==> 7z direct extraction failed, trying dmg2img + mount..."
+            IMG_FILE="$(mktemp).img"
+            dmg2img "$DMG_PATH" "$IMG_FILE" 2>/dev/null
+            MNT_DIR="$(mktemp -d)"
+            # 检测 HFS+ 分区偏移量
+            OFFSET=$(fdisk -l "$IMG_FILE" 2>/dev/null | grep "Apple_HFS" | awk '{print $2 * 512}' || echo "")
+            if [ -z "$OFFSET" ]; then
+                OFFSET=$(partx -o START -n1 -g "$IMG_FILE" 2>/dev/null | awk '{print $1 * 512}' || echo "0")
+            fi
+            if sudo mount -o loop,ro,offset=$OFFSET -t hfsplus "$IMG_FILE" "$MNT_DIR" 2>/dev/null; then
+                rsync -a "$MNT_DIR/" "$OUTPUT_DIR/"
+                sudo umount "$MNT_DIR" 2>/dev/null || true
+            else
+                echo "Error: Cannot mount DMG on Linux. Install hfsprogs: sudo apt-get install hfsprogs" >&2
+                exit 1
+            fi
+            rm -f "$IMG_FILE"
+            rm -rf "$MNT_DIR"
+        fi
         rm -rf "$TMP_EXTRACT"
         ;;
 esac

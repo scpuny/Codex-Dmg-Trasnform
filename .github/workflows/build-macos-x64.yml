@@ -32,6 +32,12 @@ jobs:
             --platform darwin --arch x64 \
             --output packages/macos-x64
 
+      - name: Pre-check
+        run: |
+          ./scripts/pack-macos-x64.sh --check \
+            --app "$(pwd)/build/extracted/Codex.app" \
+            --output-dir packages/macos-x64
+
       - name: Package
         run: |
           ./scripts/pack-macos-x64.sh \

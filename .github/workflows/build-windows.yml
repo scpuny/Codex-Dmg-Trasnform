@@ -37,13 +37,17 @@ jobs:
           }
 
       - name: Download runtimes
-        shell: pwsh
         run: |
-          mkdir packages/windows -Force
-          Invoke-WebRequest -Uri "https://github.com/electron/electron/releases/download/v35.1.0/electron-v35.1.0-win32-x64.zip" `
-            -OutFile "packages/windows/electron-v35.1.0-win32-x64.zip" -TimeoutSec 120
-          Invoke-WebRequest -Uri "https://nodejs.org/dist/v24.14.0/node-v24.14.0-win-x64.zip" `
-            -OutFile "packages/windows/node-v24.14.0-win-x64.zip" -TimeoutSec 120
+          chmod +x ./scripts/download-runtime.sh
+          ./scripts/download-runtime.sh \
+            --platform win32 --arch x64 \
+            --output packages/windows
+
+      - name: Pre-check
+        run: |
+          bash scripts/pack-windows.sh --check \
+            --app "$(pwd)/build/extracted/Codex.app" \
+            --output-dir packages/windows
 
       - name: Package
         shell: pwsh

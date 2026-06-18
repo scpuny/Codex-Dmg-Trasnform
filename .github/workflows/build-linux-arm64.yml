@@ -29,6 +29,12 @@ jobs:
             --platform linux --arch arm64 \
             --output packages/linux-arm64
 
+      - name: Pre-check
+        run: |
+          ./scripts/pack-linux-arm64.sh --check \
+            --app "$(pwd)/build/extracted/Codex.app" \
+            --output-dir packages/linux-arm64
+
       - name: Package
         run: |
           ./scripts/pack-linux-arm64.sh \

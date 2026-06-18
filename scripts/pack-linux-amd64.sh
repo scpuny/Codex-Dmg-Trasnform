@@ -180,7 +180,12 @@ done
 # --- 原生模块 ---
 if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
     cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "$LINUX_DIR/resources/"
-    log "  原生模块已复制（需按平台重新编译）"
+    # 移除 macOS-only 的 .node 文件（后续会被按平台重建）
+    find "$LINUX_DIR/resources/app.asar.unpacked" -name '*.node' -type f -delete 2>/dev/null || true
+    # 移除 macOS-only 模块
+    rm -rf "$LINUX_DIR/resources/app.asar.unpacked/node_modules/node-mac-permissions" 2>/dev/null || true
+    rm -rf "$LINUX_DIR/resources/app.asar.unpacked/node_modules/objc-js" 2>/dev/null || true
+    log "  原生模块已复制（macOS-only 模块已清理，需按平台重新编译）"
 fi
 
 # --- Electron ---

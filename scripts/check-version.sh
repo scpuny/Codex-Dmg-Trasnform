@@ -39,10 +39,21 @@ case "${1:-}" in
         # Extract and read version from a local DMG file (slow)
         shift; dmg="${1:-$PROJECT_DIR/Codex.dmg}"
         tmpdir="$(mktemp -d)"
-        img="$tmpdir/img"
-        dmg2img "$dmg" "$img" >/dev/null 2>&1
-        7z x "$img" -o"$tmpdir/out" -y >/dev/null 2>&1
-        plist=$(find "$tmpdir/out" -name "Info.plist" -path "*/Codex.app/*" 2>/dev/null | head -1)
+        # 尝试 7z 直接提取 DMG
+        if 7z x "$dmg" -o"$tmpdir/out" -y >/dev/null 2>&1; then
+            plist=$(find "$tmpdir/out" -name "Info.plist" -path "*/Codex.app/*" 2>/dev/null | head -1)
+        else
+            # 回退到 dmg2img
+            img="$tmpdir/img"
+            dmg2img "$dmg" "$img" >/dev/null 2>&1
+            mnt="$tmpdir/mnt"
+            mkdir -p "$mnt"
+            OFFSET=$(fdisk -l "$img" 2>/dev/null | grep "Apple_HFS" | awk '{print $2 * 512}' || echo "0")
+            if sudo mount -o loop,ro,offset=$OFFSET -t hfsplus "$img" "$mnt" 2>/dev/null; then
+                plist=$(find "$mnt" -name "Info.plist" -path "*/Codex.app/*" 2>/dev/null | head -1)
+                sudo umount "$mnt" 2>/dev/null || true
+            fi
+        fi
         if [ -n "$plist" ]; then
             get_local_version "$(dirname "$(dirname "$(dirname "$plist")")")"
         fi
