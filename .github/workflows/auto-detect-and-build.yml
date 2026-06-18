@@ -134,12 +134,8 @@ jobs:
           retention-days: 1
 
   # ====================================================================
-  # Step 3: 并行构建各平台（复用提取产物，不再重复下载 DMG）
+  # Step 3: 并行构建 Linux + Windows（macOS 在后面单独处理）
   # ====================================================================
-  build-macos-x64:
-    needs: [prepare]
-    uses: ./.github/workflows/build-macos-x64.yml
-
   build-linux-amd64:
     needs: [prepare]
     uses: ./.github/workflows/build-linux-amd64.yml
@@ -153,10 +149,60 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
 
   # ====================================================================
-  # Step 4: 等待所有构建完成
+  # Step 4: macOS 打包（等 Linux/Windows 结束后再跑）
+  #         优先使用本机 self-hosted runner（有缓存加速），离线时走云端
+  # ====================================================================
+  build-local-mac:
+    needs: [prepare, build-linux-amd64, build-linux-arm64, build-windows-x64]
+    runs-on: [self-hosted, macos, x64]
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Cache macOS runtimes
+        id: cache-macos
+        uses: actions/cache@v5
+        with:
+          path: packages/macos-x64
+          key: macos-runtime-${{ hashFiles('scripts/download-runtime.sh', 'scripts/common.sh') }}
+
+      - name: Download extracted Codex.app
+        uses: actions/download-artifact@v4.2.1
+        with:
+          name: Codex-extracted
+          path: build/extracted
+
+      - name: Download runtimes (if not cached)
+        if: steps.cache-macos.outputs.cache-hit != 'true'
+        run: |
+          ./scripts/download-runtime.sh \
+            --platform darwin --arch x64 \
+            --output packages/macos-x64
+
+      - name: Package
+        run: |
+          ./scripts/pack-macos-x64.sh \
+            "$(pwd)/build/extracted/Codex.app" \
+            packages/macos-x64
+
+      - name: Upload
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: Codex-macos-x64
+          path: packages/macos-x64/*.dmg
+          retention-days: 30
+
+  build-cloud-mac:
+    needs: [build-local-mac, prepare]
+    if: failure()  # 仅本地 runner 离线/失败时才走云端
+    uses: ./.github/workflows/build-macos-x64.yml
+
+  # ====================================================================
+  # Step 5: 等待所有构建完成
   # ====================================================================
   build-complete:
-    needs: [build-macos-x64, build-linux-amd64, build-linux-arm64, build-windows-x64]
+    needs: [build-linux-amd64, build-linux-arm64, build-windows-x64, build-local-mac, build-cloud-mac]
     runs-on: ubuntu-22.04
     if: always()
     outputs:
@@ -166,26 +212,38 @@ jobs:
       - name: 检查构建结果
         id: check
         run: |
-          MACOS="${{ needs.build-macos-x64.result }}"
           LINUX_AMD="${{ needs.build-linux-amd64.result }}"
           LINUX_ARM="${{ needs.build-linux-arm64.result }}"
           WIN="${{ needs.build-windows-x64.result }}"
+          LOCAL_MAC="${{ needs.build-local-mac.result }}"
+          CLOUD_MAC="${{ needs.build-cloud-mac.result }}"
 
-          echo "macos-x64: $MACOS"
           echo "linux-amd64: $LINUX_AMD"
           echo "linux-arm64: $LINUX_ARM"
           echo "windows-x64: $WIN"
+          echo "local-mac:    $LOCAL_MAC"
+          echo "cloud-mac:    $CLOUD_MAC"
+
+          # macOS 成功条件：本地成功 OR （本地失败且云端成功）
+          if [ "$LOCAL_MAC" = "success" ]; then
+            MACOS_OK=true
+          elif [ "$CLOUD_MAC" = "success" ]; then
+            MACOS_OK=true
+          else
+            MACOS_OK=false
+          fi
 
           ALL_SUCCESS=true
-          for status in "$MACOS" "$LINUX_AMD" "$LINUX_ARM" "$WIN"; do
+          for status in "$LINUX_AMD" "$LINUX_ARM" "$WIN"; do
             if [ "$status" != "success" ]; then
               ALL_SUCCESS=false
             fi
           done
+          [ "$MACOS_OK" = false ] && ALL_SUCCESS=false
           echo "all_success=$ALL_SUCCESS" >> $GITHUB_OUTPUT
 
   # ====================================================================
-  # Step 5: 发布到 GitHub Release
+  # Step 6: 发布到 GitHub Release
   # ====================================================================
   release:
     needs: [detect-version, prepare, build-complete]

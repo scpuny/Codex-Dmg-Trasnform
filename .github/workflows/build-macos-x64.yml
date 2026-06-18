@@ -12,13 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
 
+      - name: Cache macOS runtimes
+        id: cache-macos
+        uses: actions/cache@v5
+        with:
+          path: packages/macos-x64
+          key: macos-runtime-${{ hashFiles('scripts/download-runtime.sh', 'scripts/common.sh') }}
+
       - name: Download extracted Codex.app
         uses: actions/download-artifact@v4.2.1
         with:
           name: Codex-extracted
           path: build/extracted
 
-      - name: Download runtimes
+      - name: Download runtimes (if not cached)
+        if: steps.cache-macos.outputs.cache-hit != 'true'
         run: |
           ./scripts/download-runtime.sh \
             --platform darwin --arch x64 \
