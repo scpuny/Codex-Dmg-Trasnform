@@ -161,18 +161,28 @@ jobs:
       - uses: actions/checkout@v7.0.0
 
       # ========== 缓存 Codex.dmg（避免每次下载 486MB） ==========
+      # 缓存到 ~/.cache/codex-build/（持久化，不受 git checkout 清理影响）
+      - name: Ensure cache directory
+        run: mkdir -p ~/.cache/codex-build
+
       - name: Cache Codex.dmg
         id: cache-dmg
         uses: actions/cache@v5
         with:
-          path: Codex.dmg
+          path: ~/.cache/codex-build/Codex.dmg
           key: codex-dmg-${{ hashFiles('.codex-version') }}
 
-      - name: Download Codex.dmg (from OpenAI CDN)
+      - name: Download Codex.dmg (from OpenAI CDN, if not cached)
         if: steps.cache-dmg.outputs.cache-hit != 'true'
         run: |
           source scripts/common.sh
-          download_codex_dmg "${{ github.workspace }}/Codex.dmg"
+          download_codex_dmg ~/.cache/codex-build/Codex.dmg
+
+      - name: Symlink Codex.dmg into workspace
+        run: |
+          if [ -f ~/.cache/codex-build/Codex.dmg ] && [ ! -f "${{ github.workspace }}/Codex.dmg" ]; then
+            ln -s ~/.cache/codex-build/Codex.dmg "${{ github.workspace }}/Codex.dmg"
+          fi
 
       # ========== 提取 Codex.app（用 macOS 原生 hdiutil） ==========
       - name: Extract Codex.app
@@ -184,11 +194,12 @@ jobs:
           ls -la "${{ github.workspace }}/build/extracted/Codex.app"
 
       # ========== 缓存运行时（Electron + Node.js） ==========
+      # 缓存存到 ~/.cache/codex-build/ 目录（持久化，不受 git checkout 清理影响）
       - name: Cache macOS runtimes
         id: cache-macos
         uses: actions/cache@v5
         with:
-          path: packages/macos-x64
+          path: ~/.cache/codex-build/macos-x64
           key: macos-runtime-${{ hashFiles('scripts/download-runtime.sh', 'scripts/common.sh') }}
 
       - name: Download runtimes (if not cached)
@@ -196,7 +207,18 @@ jobs:
         run: |
           ./scripts/download-runtime.sh \
             --platform darwin --arch x64 \
-            --output packages/macos-x64
+            --output ~/.cache/codex-build/macos-x64
+
+      # 确保 packages/macos-x64 存在（pack 脚本引用此路径）
+      # 用符号链接指向缓存目录，避免重复复制大文件
+      - name: Link runtime files to packages/
+        run: |
+          mkdir -p "${{ github.workspace }}/packages/macos-x64"
+          if [ -d ~/.cache/codex-build/macos-x64 ]; then
+            for f in ~/.cache/codex-build/macos-x64/*; do
+              [ -f "$f" ] && ln -sf "$f" "${{ github.workspace }}/packages/macos-x64/"
+            done
+          fi
 
       - name: Pre-check
         run: |
