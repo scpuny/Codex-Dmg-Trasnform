@@ -1,0 +1,30 @@
+# DMG file (large binary, ~486MB)
+Codex.dmg
+
+# Build output
+build/
+packages/*/electron-*
+packages/*/*.zip
+packages/*/*.dmg
+packages/*/*.deb
+packages/*/*.AppImage
+packages/*/*.exe
+packages/*/*.msi
+
+# Node modules
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

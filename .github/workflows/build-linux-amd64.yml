@@ -1,0 +1,73 @@
+name: Build Linux amd64
+
+on:
+  workflow_dispatch:
+    inputs:
+      dmg_url:
+        description: 'Override DMG download URL (default: official OpenAI CDN)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      dmg_url:
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full dmg2img dpkg-dev
+
+      - name: Download Codex.dmg
+        run: |
+          URL="${{ inputs.dmg_url || 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg' }}"
+          echo "Downloading from: $URL"
+          curl -fSLk --retry 3 "$URL" -o Codex.dmg
+          echo "Downloaded: $(du -h Codex.dmg | cut -f1)"
+
+      - name: Extract
+        run: |
+          ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
+          ls -la build/extracted/Codex.app
+
+      - name: 提取版本号
+        id: version
+        run: |
+          VERSION=$(./scripts/info.sh --app build/extracted/Codex.app 2>/dev/null | grep "CFBundleShortVersionString" | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "App version: $VERSION"
+
+      - name: Print version
+        run: ./scripts/info.sh --app build/extracted/Codex.app
+
+      - name: Download runtimes
+        run: |
+          ./scripts/download-runtime.sh \
+            --platform linux --arch x64 \
+            --output packages/linux-amd64
+
+      - name: Package
+        run: |
+          ./scripts/pack-linux-amd64.sh \
+            --app "$(pwd)/build/extracted/Codex.app" \
+            --output-dir packages/linux-amd64
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-linux-amd64
+          path: packages/linux-amd64/Codex_*.deb
+          retention-days: 30
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-linux-amd64-archive
+          path: packages/linux-amd64/Codex-*.tar.gz
+          retention-days: 7

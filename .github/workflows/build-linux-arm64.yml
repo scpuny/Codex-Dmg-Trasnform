@@ -1,0 +1,33 @@
+name: Build Linux ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      dmg_url:
+        description: 'Override DMG download URL'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      dmg_url:
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full dmg2img dpkg-dev
+      - run: |
+          URL="${{ inputs.dmg_url || 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg' }}"
+          curl -fSLk --retry 3 "$URL" -o Codex.dmg
+      - run: ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
+      - run: ./scripts/info.sh --app build/extracted/Codex.app
+      - run: ./scripts/download-runtime.sh --platform linux --arch arm64 --output packages/linux-arm64
+      - run: ./scripts/pack-linux-arm64.sh --app "$(pwd)/build/extracted/Codex.app" --output-dir packages/linux-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-linux-arm64
+          path: packages/linux-arm64/Codex_*.deb
+          retention-days: 30

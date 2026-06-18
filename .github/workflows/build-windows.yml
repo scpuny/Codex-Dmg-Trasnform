@@ -1,0 +1,73 @@
+name: Build Windows x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      dmg_url:
+        description: 'Override DMG download URL'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      dmg_url:
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        shell: pwsh
+        run: choco install 7zip -y --no-progress 2>$null
+
+      - name: Download Codex.dmg
+        shell: pwsh
+        run: |
+          $url = "${{ inputs.dmg_url || 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg' }}"
+          Write-Host "Downloading from: $url"
+          Invoke-WebRequest -Uri $url -OutFile "Codex.dmg" -TimeoutSec 300
+          Write-Host "Downloaded: $((Get-Item Codex.dmg).Length / 1MB) MB"
+
+      - name: Extract
+        shell: pwsh
+        run: |
+          mkdir build/extracted -Force
+          & "C:\Program Files\7-Zip\7z.exe" x "Codex.dmg" -o"build/dmg_tmp" -y
+          $hfs = Get-ChildItem -Path "build/dmg_tmp" -Recurse -File | Sort-Object Length -Descending | Select-Object -First 1
+          if ($hfs) {
+            & "C:\Program Files\7-Zip\7z.exe" x $hfs.FullName -o"build/extracted" -y
+          }
+          # Create symlink for Codex.app
+          $app = Get-ChildItem -Path "build/extracted" -Recurse -Directory -Filter "*.app" | Select-Object -First 1
+          if ($app) {
+            Write-Host "Found app at: $($app.FullName)"
+            $app.FullName | Out-File -FilePath "build/app_path.txt"
+          }
+
+      - name: Download runtimes
+        shell: pwsh
+        run: |
+          mkdir packages/windows -Force
+          Invoke-WebRequest -Uri "https://github.com/electron/electron/releases/download/v35.1.0/electron-v35.1.0-win32-x64.zip" `
+            -OutFile "packages/windows/electron-v35.1.0-win32-x64.zip" -TimeoutSec 120
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v24.14.0/node-v24.14.0-win-x64.zip" `
+            -OutFile "packages/windows/node-v24.14.0-win-x64.zip" -TimeoutSec 120
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $appPath = Get-Content "build/app_path.txt" -ErrorAction SilentlyContinue
+          if (-not $appPath) {
+            $appPath = Get-ChildItem -Path "build/extracted" -Recurse -Directory -Filter "*.app" | Select-Object -First 1
+            $appPath = $appPath.FullName
+          }
+          bash scripts/pack-windows.sh --app "$appPath" --output-dir packages/windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-windows-x64
+          path: packages/windows/Codex-*.zip
+          retention-days: 30

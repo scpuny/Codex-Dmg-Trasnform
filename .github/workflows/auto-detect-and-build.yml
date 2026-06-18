@@ -1,0 +1,151 @@
+name: Auto-Detect & Build
+
+on:
+  schedule:
+    # 每6小时检查一次新版
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制构建（忽略版本缓存）'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  # ====================================================================
+  # Job 1: 仅检查远程版本指纹（HEAD 请求，不下载 DMG，~几百字节流量）
+  # ====================================================================
+  check-version:
+    runs-on: ubuntu-22.04
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 获取上次构建的版本指纹
+        id: cache
+        run: |
+          if [ -f .codex-version ]; then
+            echo "cached=$(cat .codex-version)" >> $GITHUB_OUTPUT
+          else
+            echo "cached=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 远程指纹检测（仅 HEAD 请求）
+        id: remote
+        run: |
+          # 仅请求响应头，不下载文件体
+          HEADERS=$(curl -fsSLI --retry 2 \
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" 2>/dev/null)
+          LAST_MODIFIED=$(echo "$HEADERS" | grep -i "last-modified" | head -1 | sed 's/.*: //' | tr -d '\r')
+          CONTENT_LENGTH=$(echo "$HEADERS" | grep -i "content-length" | head -1 | sed 's/.*: //' | tr -d '\r')
+          FINGERPRINT="${LAST_MODIFIED}:${CONTENT_LENGTH}"
+          echo "fingerprint=$FINGERPRINT" >> $GITHUB_OUTPUT
+          echo "Remote: $FINGERPRINT"
+
+      - name: 对比版本
+        id: check
+        run: |
+          CACHED="${{ steps.cache.outputs.cached }}"
+          REMOTE="${{ steps.remote.outputs.fingerprint }}"
+          echo "Cached:  $CACHED"
+          echo "Remote:  $REMOTE"
+
+          if [ -z "$REMOTE" ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          elif [ "$CACHED" != "$REMOTE" ] || [ "${{ inputs.force }}" = "true" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            # 更新缓存
+            echo "$REMOTE" > .codex-version
+            git config user.name "codex-bot"
+            git config user.email "bot@openai.com"
+            git add .codex-version
+            git commit -m "chore: update Codex fingerprint" || true
+            git push
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  # ====================================================================
+  # Job 2: 仅当版本变化时，才下载 486MB DMG 并构建
+  # ====================================================================
+  build-all:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            workflow: build-linux-amd64.yml
+            runner: ubuntu-22.04
+          - target: linux-arm64
+            workflow: build-linux-arm64.yml
+            runner: ubuntu-22.04-arm
+          - target: macos-x64
+            workflow: build-macos-x64.yml
+            runner: macos-13
+          - target: windows-x64
+            workflow: build-windows.yml
+            runner: windows-2022
+
+    # 注意：下面用 secrets: inherit 传递 DMG 下载 URL（固定地址，无需密码）
+    uses: ./.github/workflows/${{ matrix.workflow }}
+    with:
+      dmg_url: 'https://persistent.oaistatic.com/codex-app-prod/Codex.dmg'
+
+  # ====================================================================
+  # Job 3: 收集所有产物，创建 GitHub Release
+  # ====================================================================
+  publish:
+    needs: [check-version, build-all]
+    # 即使 build-all 因策略跳过（比如只有部分平台成功），也尝试发布
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+        continue-on-error: true
+
+      - name: 生成版本 Tag（基于构建日期）
+        id: version
+        run: |
+          DATE=$(date -u +%Y%m%d-%H%M%S)
+          echo "tag=build-${DATE}" >> $GITHUB_OUTPUT
+
+      - name: 生成 Release 说明
+        id: body
+        run: |
+          cat > release_body.md << EOF
+          ## Codex Cross-Platform Build
+
+          Automatically built from official Codex.dmg.
+
+          | Platform | Status |
+          |----------|--------|
+          | macOS Intel | ✅ included |
+          | Linux amd64 | ✅ included |
+          | Linux ARM64 | ✅ included |
+          | Windows x64 | ✅ included |
+
+          **注意**：
+          - 平台后端二进制 (codex, codex_chronicle, cua_node) 需单独提供
+          - Electron 使用社区标准版替代 OpenAI 定制版
+          - 原生 Node 模块需按平台重新编译
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Codex Build ${{ steps.version.outputs.tag }}"
+          body_path: release_body.md
+          files: artifacts/**/*
+          draft: false
+          prerelease: true
