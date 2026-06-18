@@ -149,11 +149,11 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
 
   # ====================================================================
-  # Step 4: macOS 打包（等 Linux/Windows 结束后再跑）
+  # Step 4: macOS 打包（与 Linux/Windows 并行）
   #         优先使用本机 self-hosted runner（有缓存加速），离线时走云端
   # ====================================================================
   build-local-mac:
-    needs: [prepare, build-linux-amd64, build-linux-arm64, build-windows-x64]
+    needs: [prepare]
     runs-on: [self-hosted, macos, x64]
     continue-on-error: true
     timeout-minutes: 60
@@ -168,7 +168,7 @@ jobs:
           path: Codex.dmg
           key: codex-dmg-${{ hashFiles('.codex-version') }}
 
-      - name: Download Codex.dmg (from OpenAI CDN, ~486MB)
+      - name: Download Codex.dmg (from OpenAI CDN)
         if: steps.cache-dmg.outputs.cache-hit != 'true'
         run: |
           source scripts/common.sh
