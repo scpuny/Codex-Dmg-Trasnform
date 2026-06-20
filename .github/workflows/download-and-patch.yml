@@ -193,13 +193,22 @@ jobs:
           console.log("Integrity:", hash.slice(0, 16) + "...");
           '
 
-      - name: 签名
+      - name: 签名（组件级→主包）
         run: |
           xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
-          # --force 直接覆盖原签名；--deep 递归子组件
-          # 不加 --remove-signature（macOS 14+ 对嵌套 framework 会报 bundle format ambiguous）
-          codesign --sign - --force --deep \
-            --preserve-metadata=identifier,entitlements,flags,runtime \
+          # 先逐组件签名（--deep 在 macOS 14+ 对嵌套 framework 会报 ambiguous）
+          for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
+            [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
+          done
+          # Helper apps 嵌套在 Framework 内部，也需要签
+          for helper in "build-patch/Codex.app/Contents/Frameworks/Codex Framework.framework/Versions/"*/Helpers/*.app; do
+            [ -d "$helper" ] && codesign --sign - --force "$helper" 2>/dev/null || true
+          done
+          for plugin in "build-patch/Codex.app/Contents/PlugIns/"*.plugin; do
+            [ -d "$plugin" ] && codesign --sign - --force "$plugin" 2>/dev/null || true
+          done
+          # 最后签主包（不带 --deep，组件已独立签过）
+          codesign --sign - --force --preserve-metadata=identifier,entitlements,flags,runtime \
             "build-patch/Codex.app"
           codesign -dvvv "build-patch/Codex.app" 2>&1 | \
             grep -E "Authority=|Signed Time|Sealed Resources" || true
