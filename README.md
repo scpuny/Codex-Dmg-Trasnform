@@ -17,16 +17,35 @@ OpenAI Codex 桌面版目前只发布 macOS ARM64 (Apple Silicon) 的 DMG。Inte
 
 ## 使用方式
 
-### 下载最新版
+### 📥 下载最新版
 
 去 [Releases 页面](https://github.com/scpuny/Codex-Dmg-Trasnform/releases) 下载最新的 `.dmg`。
 
-### 手动触发构建
+### 🤖 自动构建（定时）
+
+工作流每 **6 小时**自动检查 OpenAI 官方 `appcast-x64.xml`：
+- 版本无变化 → **跳过**（0 下载流量）
+- 检测到新版本 → 自动下载 → 补丁 → 构建 → 创建 Release
+
+### 🖐️ 手动触发构建
 
 在 [Actions 页面](https://github.com/scpuny/Codex-Dmg-Trasnform/actions/workflows/download-and-patch.yml) 点击 **Run workflow**：
 
-- **force**: 勾选可跳过版本缓存强制重新下载
-- **version**: 指定版本号（如 `26.616.32156`），留空则为最新版
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `force` (boolean) | 勾选 = 跳过版本缓存强制重下 | `true` |
+| `version` (string) | 指定版本构建，空=最新版 | `26.616.32156` |
+
+```bash
+# 场景1：强制重新构建最新版（即使缓存相同）
+# → 勾选 force，留空 version
+
+# 场景2：构建指定历史版本
+# → 不勾选 force，version 填 "26.616.31447"
+
+# 场景3：默认检测（同 cron）
+# → 不勾选 force，留空 version
+```
 
 ## 补丁说明
 
@@ -50,9 +69,13 @@ appcast-x64.xml → Codex-darwin-x64-*.zip → 解压 → 补丁 ASAR → 签名
 
 ### Linux
 
-从 `Codex.dmg` (ARM64) 提取 app.asar → 补丁 → 使用标准 Electron 打包。
+Linux 构建流程：
+1. **macOS 构建完成后**，上传 patched `app.asar` + `app.asar.unpacked` 作为共享产物
+2. Linux 构建下载这些共享产物 + 标准 Electron 运行时
+3. 重建原生 Node 模块（`rebuild-native-modules.sh`）
+4. 打包为 `.tar.gz`
 
-> ⚠️ Linux 版缺少 `codex` 后端二进制，UI 可启动但 AI 功能不可用。
+> ⚠️ Linux 版缺少 `codex` 后端二进制，UI 可启动但 AI 后端功能不可用。
 
 ## 本地构建
 

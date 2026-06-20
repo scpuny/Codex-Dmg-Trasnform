@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: codex-build
+  cancel-in-progress: true
+
 jobs:
   # ====================================================================
   # 检测最新版本
@@ -99,8 +103,6 @@ jobs:
     if: needs.detect.outputs.changed == 'true'
     runs-on: macos-14
     timeout-minutes: 120
-    outputs:
-      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
