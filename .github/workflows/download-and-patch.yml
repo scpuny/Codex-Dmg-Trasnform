@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: '强制重新下载（即使已有缓存）'
+        description: '强制重新下载(即使已有缓存)'
         required: false
         type: boolean
         default: false
       version:
-        description: '指定版本号（如 26.616.32156，空=最新）'
+        description: '指定版本号(如 26.616.32156,空=最新)'
         required: false
         type: string
 
@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: codex-build
+  group: codex-build-${{ github.ref_name }}-${{ inputs.version || needs.detect.outputs.version }}
   cancel-in-progress: true
 
 env:
@@ -82,7 +82,7 @@ jobs:
           fi
 
   # ====================================================================
-  # Job 2: prepare — 下载 → 提取 → 补丁 → 上传（Ubuntu）
+  # Job 2: prepare — 下载 → 提取 → 补丁 → 上传(Ubuntu)
   # ====================================================================
   prepare:
     needs: detect
@@ -113,7 +113,7 @@ jobs:
           APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
           [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
 
-          # .app 完整结构（macOS 签名+DMG 需要）
+          # .app 完整结构(macOS 签名+DMG 需要)
           mkdir -p build-patch/Codex.app/Contents
           for d in Frameworks MacOS PlugIns Resources; do
             [ -d "$APP_PATH/Contents/$d" ] && \
@@ -121,7 +121,7 @@ jobs:
           done
           cp "$APP_PATH/Contents/Info.plist" "build-patch/Codex.app/Contents/Info.plist"
 
-          # _asar 提取（补丁目标 + 重打包源）
+          # _asar 提取(补丁目标 + 重打包源)
           mkdir -p src/mac-x64
           npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
           echo "_asar: $(find src/mac-x64/_asar -type f | wc -l) files"
@@ -134,10 +134,10 @@ jobs:
 
           rm -rf tmp-extract Codex-x64.zip
 
-      - name: 打补丁（AST-based）
+      - name: 打补丁(AST-based)
         run: node scripts/patch-all.js mac-x64
 
-      - name: 上传构建产物（_asar + .app 结构）
+      - name: 上传构建产物(_asar + .app 结构)
         uses: actions/upload-artifact@v4
         with:
           name: build-patch-${{ needs.detect.outputs.version }}
@@ -146,7 +146,7 @@ jobs:
 
   # ====================================================================
   # Job 3: macOS Intel (x86_64) — DMG
-  # 轻量收尾：重打包 ASAR → integrity → 签名 → DMG
+  # 轻量收尾:重打包 ASAR → integrity → 签名 → DMG
   # ====================================================================
   build-macos-x64:
     needs: [detect, prepare]
@@ -176,6 +176,39 @@ jobs:
             "build-patch/Codex.app/Contents/Resources/app.asar"
           echo "Repacked: $(ls -lh build-patch/Codex.app/Contents/Resources/app.asar)"
 
+      - name: 裁剪双架构二进制(移除 arm64 切片)
+      - name: ARM runner 安全裁剪 x64 二进制(lipo extract + strip)
+        run: |
+          # 核心:在 ARM 环境用 -extract x86_64 而不是 -remove arm64
+          # -extract 完整提取纯净单架构二进制,-remove 会残留无效段
+
+          # 1) 裁剪主二进制 MacOS/Codex
+          BIN="build-patch/Codex.app/Contents/MacOS/Codex"
+          echo "=== 裁剪前: $(lipo -archs \"$BIN\" 2>/dev/null || echo unknown)"
+          if lipo -archs "$BIN" 2>/dev/null | grep -q arm64; then
+            lipo "$BIN" -extract x86_64 -output "${BIN}.thin"
+            mv -f "${BIN}.thin" "$BIN"
+            chmod +x "$BIN"
+            echo "=== 裁剪后: $(lipo -archs \"$BIN\" 2>/dev/null || echo unknown)"
+          fi
+
+          # 2) 裁剪 Codex Framework.framework 主二进制
+          FW_BIN="build-patch/Codex.app/Contents/Frameworks/Codex Framework.framework/Versions/149.0.7827.115/Codex Framework"
+          if [ -f "$FW_BIN" ]; then
+            echo "Framework: $(lipo -archs \"$FW_BIN\" 2>/dev/null || echo unknown)"
+            if lipo -archs "$FW_BIN" 2>/dev/null | grep -q arm64; then
+              lipo "$FW_BIN" -extract x86_64 -output "${FW_BIN}.thin"
+              mv -f "${FW_BIN}.thin" "$FW_BIN"
+              echo "Framework sliced to x86_64 only"
+            fi
+          fi
+
+          # 3) strip 调试符号(官方内置步骤,再减几十MB)
+          strip -x "$BIN" 2>/dev/null || true
+          if [ -f "$FW_BIN" ]; then
+            strip -x "$FW_BIN" 2>/dev/null || true
+          fi
+          echo "=== Strip debug symbols done ==="
       - name: 更新 ElectronAsarIntegrity
         run: |
           node -e '
@@ -193,9 +226,9 @@ jobs:
           console.log("Integrity:", hash.slice(0, 16) + "...");
           '
 
-      - name: 签名（参考项目方式）
+      - name: 签名(参考项目方式)
         run: |
-          # 参考项目：先移除原签名（失败则跳过），再 ad-hoc 重签
+          # 参考项目:先移除原签名(失败则跳过),再 ad-hoc 重签
           codesign --remove-signature "build-patch/Codex.app" 2>/dev/null || true
           xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
           if ! codesign --sign - --force --deep "build-patch/Codex.app" 2>/dev/null; then
@@ -210,20 +243,34 @@ jobs:
           codesign -dvvv "build-patch/Codex.app" 2>&1 | grep -E "Authority=|Signed Time|Sealed Resources" || true
           echo "Signed OK"
 
+
+      - name: 清理冗余 + 统一时间戳
+        run: |
+          # 清理无用文件
+          find "build-patch/Codex.app" -name ".DS_Store" -delete 2>/dev/null || true
+          find "build-patch/Codex.app" -name "*.map" -delete 2>/dev/null || true
+          find "build-patch/Codex.app" -iname "readme*" -delete 2>/dev/null || true
+          find "build-patch/Codex.app" -iname "license*" -delete 2>/dev/null || true
+          find "build-patch/Codex.app" -iname "NOTICE*" -delete 2>/dev/null || true
+
+          # 统一全部文件 mtime(复刻官方流水线连续压缩增益)
+          find "build-patch/Codex.app" -exec touch -t 202601010000 {} \; 2>/dev/null || true
+          echo "Cleanup + timestamp unified"
       - name: 创建 DMG
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
           mkdir -p out
-          # DMG：直接挂载用（ULFO 压缩）
+          # DMG:直接挂载用(ULFO 压缩)
           hdiutil create -volname Codex \
             -srcfolder "build-patch/Codex.app" \
             -ov -format ULFO "out/Codex-${VERSION}-macos-x64.dmg"
           echo "DMG: $(ls -lh out/*.dmg)"
 
-      - name: 创建 ZIP（官方同规格，最大压缩）
+      - name: 创建 ZIP(官方同规格,最大压缩)
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
           cd "build-patch"
+          # -X 保留 macOS 扩展属性,-9 最大 deflate 压缩,--symlinks 保留软链接
           zip -r -9 --symlinks -X "../out/Codex-${VERSION}-macos-x64.zip" "Codex.app"
           cd "${{ github.workspace }}"
           echo "ZIP: $(ls -lh out/*.zip)"
@@ -250,8 +297,8 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Job 4: Linux (amd64 + arm64) — 直接组装 tar.gz，不用 Forge
-  # Forge 的 ignore/asar 配置对复杂目录结构兼容性差，直接组装更可靠
+  # Job 4: Linux (amd64 + arm64) — 直接组装 tar.gz,不用 Forge
+  # Forge 的 ignore/asar 配置对复杂目录结构兼容性差,直接组装更可靠
   # ====================================================================
   build-linux:
     needs: [detect, prepare]
