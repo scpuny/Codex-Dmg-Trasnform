@@ -206,6 +206,30 @@ if [ -f "$CUA_ARCHIVE" ]; then
 JSON
 fi
 
+# ============================================================
+# Ad-hoc code sign (re-sign after modifications)
+# ============================================================
+log "Re-signing Codex.app with ad-hoc signature..."
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+if ! codesign --sign "$CODESIGN_IDENTITY" --force --deep \
+    --preserve-metadata=identifier,entitlements,flags,runtime \
+    "$BUILD_DIR/Codex.app" 2>&1; then
+    log "WARNING: Ad-hoc signing had issues, attempting component-by-component..."
+    # If --deep fails, sign key components individually
+    for fw in "$BUILD_DIR/Codex.app/Contents/Frameworks/"*.framework; do
+        [ -d "$fw" ] && codesign --sign "$CODESIGN_IDENTITY" --force "$fw" 2>/dev/null || true
+    done
+    for plugin in "$BUILD_DIR/Codex.app/Contents/PlugIns/"*.plugin; do
+        [ -d "$plugin" ] && codesign --sign "$CODESIGN_IDENTITY" --force "$plugin" 2>/dev/null || true
+    done
+    codesign --sign "$CODESIGN_IDENTITY" --force \
+        --preserve-metadata=identifier,entitlements,flags,runtime \
+        "$BUILD_DIR/Codex.app" 2>&1 || log "WARNING: Final signing had issues (app will show Gatekeeper warning)"
+fi
+# Verify
+codesign -dvvv "$BUILD_DIR/Codex.app" 2>&1 | grep -E "Authority=|Signed Time|Sealed Resources" || true
+log "Signing complete"
+
 # Create .dmg (use hdiutil exclusively — built into macOS, reliable)
 # Avoid create-dmg as it can hang on CI runners
 DMG_PATH="$OUTPUT_DIR/Codex-${VERSION}-macos-x64.dmg"
