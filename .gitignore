@@ -1,40 +1,53 @@
-# DMG file (large binary, ~486MB)
-Codex.dmg
+# Original app bundle (reference only)
+Codex.app/
 
-.reasonix
-
-# Build output
-build/
-packages/*/electron-*
-packages/*/*.zip
-packages/*/*.dmg
-packages/*/*.deb
-packages/*/*.AppImage
-packages/*/*.exe
-packages/*/*.msi
-packages/*/*.xz
-packages/*/*.gz
-
-# Node modules
+# Dependencies
 node_modules/
+
+# Build outputs
+out/
+dist/
+
+# Upstream ASAR extracts and build-time copies (all generated)
+src/
+src/.build-mode
+
+# Version check state (local only)
+scripts/.versions.json
+
+# Logs
+*.log
+npm-debug.log*
 
 # OS files
 .DS_Store
 Thumbs.db
-desktop.ini
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
-*~
 
-# Logs
-*.log
+# Environment
+.env
+.env.local
+.env.*.local
 
-# Original Codex app source files (extracted from DMG)
-package.json
+# Temporary files
+*.tmp
+*.temp
 
-# Old version cache (replaced by .codex-x64-version)
-.codex-version
+# Native binaries (downloaded via npm in CI)
+resources/bin/
+resources/codex
+resources/codex.exe
+
+# Build outputs
+packages/
+build/
+*.dmg
+*.tar.gz
+*.deb
+*.rpm
+*.zip
