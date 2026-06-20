@@ -203,7 +203,7 @@ jobs:
           echo "✅ app.asar replaced"
 
           # 更新 ElectronAsarIntegrity 哈希
-          ./scripts/update-integrity.sh "$APP_PATH"
+          bash scripts/update-integrity.sh "$APP_PATH"
 
           # 移除原签名（签名已不匹配，保留会导致"已损坏"错误）
           codesign --remove-signature "$APP_PATH" 2>/dev/null || true
