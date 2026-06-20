@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: codex-build-${{ github.ref_name }}-${{ inputs.version || needs.detect.outputs.version }}
+  group: codex-build-${{ github.ref_name }}-${{ inputs.version }}
   cancel-in-progress: true
 
 env:
@@ -176,8 +176,7 @@ jobs:
             "build-patch/Codex.app/Contents/Resources/app.asar"
           echo "Repacked: $(ls -lh build-patch/Codex.app/Contents/Resources/app.asar)"
 
-      - name: 裁剪双架构二进制(移除 arm64 切片)
-      - name: ARM runner 安全裁剪 x64 二进制(lipo extract + strip)
+      - name: 裁剪双架构二进制(移除 arm64 切片) + ARM runner 安全裁剪 x64 二进制
         run: |
           # 核心:在 ARM 环境用 -extract x86_64 而不是 -remove arm64
           # -extract 完整提取纯净单架构二进制,-remove 会残留无效段
