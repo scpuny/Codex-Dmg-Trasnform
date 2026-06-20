@@ -205,13 +205,13 @@ jobs:
           # 更新 ElectronAsarIntegrity 哈希
           bash scripts/update-integrity.sh "$APP_PATH"
 
-          # 移除原签名（签名已不匹配，保留会导致"已损坏"错误）
+          # 重新签名（ad-hoc，保留基本签名结构）
+          # 注意：必须重新签名！否则其他 app（如 Codex++）无法通过 macOS Gatekeeper 启动它
           codesign --remove-signature "$APP_PATH" 2>/dev/null || true
+          codesign --sign - --force --deep "$APP_PATH"
           # 移除隔离属性
           xattr -rd com.apple.quarantine "$APP_PATH" 2>/dev/null || true
-          # 不重新签名 → app 为 unsigned
-          # macOS 行为: 第一次显示"无法验证开发者"但提供"打开"按钮
-          echo "✅ Signature removed, app is unsigned (one-time gatekeeper dialog)"
+          echo "✅ Ad-hoc signed (necessary for Codex++ compatibility)"
 
           # DMG
           VERSION="${{ needs.detect.outputs.version }}"
