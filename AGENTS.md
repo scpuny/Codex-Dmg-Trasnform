@@ -40,10 +40,14 @@ This project downloads the official **Codex.app** (OpenAI's desktop Electron app
 ## CI/CD (GitHub Actions)
 
 **Workflow**: `.github/workflows/download-and-patch.yml`
-**Schedule**: `cron: '0 */6 * * *'` (every 6 hours)
-**Manual**: `workflow_dispatch` with optional version override
 
-### Build Flow
+### 自动模式（定时检测）
+
+| 触发方式 | 说明 |
+|---|---|
+| `cron: '0 */6 * * *'` | 每 6 小时自动检查 appcast-x64.xml |
+| 版本对比 | 通过 `.codex-x64-version` 缓存文件比较，无变化不下载（0 流量） |
+| 检测到新版本 | 自动下载 → 补丁 → 构建 → 创建 GitHub Release |
 
 ```mermaid
 graph TD
@@ -57,9 +61,23 @@ graph TD
     F --> G
 ```
 
+### 手动模式（workflow_dispatch）
+
+在 [Actions 页面](https://github.com/scpuny/Codex-Dmg-Trasnform/actions/workflows/download-and-patch.yml) 点击 **Run workflow**：
+
+| 参数 | 说明 |
+|---|---|
+| `force` (boolean) | 勾选 = 忽略版本缓存，强制重新下载 |
+| `version` (string) | 指定版本号（如 `26.616.32156`），留空 = 最新版 |
+
+```bash
+# 示例：手动指定旧版本构建
+# 在 GitHub UI 中: version = "26.616.31447"
+```
+
 ### Version Detection
 
-The workflow parses `appcast-x64.xml` (OpenAI's Sparkle appcast) to get the latest version URL. It compares with `.codex-x64-version` cache file to avoid redundant builds. Only downloads the full zip (~460MB) when a new version is detected.
+The workflow parses `appcast-x64.xml` (OpenAI's Sparkle appcast) to get the latest version URL:
 
 ## Patches
 
