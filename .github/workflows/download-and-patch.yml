@@ -193,53 +193,17 @@ jobs:
           console.log("Integrity:", hash.slice(0, 16) + "...");
           '
 
-      - name: 替换为标准 Electron Framework（节省 ~150 MB）
+      - name: 签名（参考项目方式）
         run: |
-          # 下载标准 Electron（若已缓存在 packages/ 则直接用）
-          ELEC_ZIP="packages/macos-x64/electron-35.1.0-darwin-x64.zip"
-          if [ ! -f "$ELEC_ZIP" ]; then
-            mkdir -p packages/macos-x64
-            curl -fSLk --connect-timeout 30 --max-time 300 --retry 3 \
-              "https://github.com/electron/electron/releases/download/v35.1.0/electron-v35.1.0-darwin-x64.zip" \
-              -o "$ELEC_ZIP"
-          fi
-          TMP_ELEC="$(mktemp -d)"
-          unzip -q "$ELEC_ZIP" -d "$TMP_ELEC"
-          FRAMEWORKS="$TMP_ELEC/Electron.app/Contents/Frameworks"
-          if [ -d "$FRAMEWORKS/Electron Framework.framework" ]; then
-            rm -rf "build-patch/Codex.app/Contents/Frameworks/Codex Framework.framework"
-            cp -a "$FRAMEWORKS/Electron Framework.framework" \
-              "build-patch/Codex.app/Contents/Frameworks/Electron Framework.framework"
-            echo "Framework replaced: Electron Framework.framework"
-          fi
-          if [ -f "$TMP_ELEC/Electron.app/Contents/MacOS/Electron" ]; then
-            rm -f "build-patch/Codex.app/Contents/MacOS/Codex"
-            cp "$TMP_ELEC/Electron.app/Contents/MacOS/Electron" \
-              "build-patch/Codex.app/Contents/MacOS/Codex"
-            chmod +x "build-patch/Codex.app/Contents/MacOS/Codex"
-            echo "Main binary replaced"
-          fi
-          rm -rf "$TMP_ELEC"
-          # 更新 Info.plist 中的框架名
-          plutil -replace CFBundleExecutable -string "Codex" "build-patch/Codex.app/Contents/Info.plist" 2>/dev/null || true
-          echo "Framework replacement done"
-
-      - name: 签名（递归子组件→主包）
-        run: |
-          # 1) 签名所有嵌套 Helper .app（排除 Codex.app 自身）
-          find "build-patch/Codex.app" -path "*/Codex.app" -prune -o -name "*.app" -depth -print 2>/dev/null |             while IFS= read -r helper; do
-              codesign --sign - --force "$helper" 2>/dev/null || true
+          # 参考项目：先移除原签名（失败则跳过），再 ad-hoc 重签
+          codesign --remove-signature "build-patch/Codex.app" 2>/dev/null || true
+          xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
+          if ! codesign --sign - --force --deep "build-patch/Codex.app" 2>/dev/null; then
+            # --deep 失败时退回到组件级签名
+            find "build-patch/Codex.app" -path "*/Codex.app" -prune -o -name "*.app" -depth -print 2>/dev/null |               while IFS= read -r helper; do codesign --sign - --force "$helper" 2>/dev/null || true; done
+            for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
+              [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
             done
-          # 2) 签名 Frameworks
-          for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
-            [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
-          done
-          # 3) 签名 PlugIns
-          for plugin in "build-patch/Codex.app/Contents/PlugIns/"*.plugin; do
-            [ -d "$plugin" ] && codesign --sign - --force "$plugin" 2>/dev/null || true
-          done
-          # 4) 最后签主包
-          if ! codesign --sign - --force --preserve-metadata=identifier,entitlements,flags,runtime "build-patch/Codex.app" 2>/dev/null; then
             codesign --sign - --force "build-patch/Codex.app"
           fi
           echo "--- Verification ---"
