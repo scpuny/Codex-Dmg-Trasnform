@@ -46,12 +46,15 @@ jobs:
       - name: 解析最新版本
         id: parse
         run: |
-          VER=$(grep -oP '(?<=sparkle:shortVersionString=")[^"]*' /tmp/appcast.xml)
+          # 格式1: 元素格式 sparkle:shortVersionString>VALUE<
+          VER=$(grep -oE 'sparkle:shortVersionString>[^<]*' /tmp/appcast.xml |             head -1 | sed 's/sparkle:shortVersionString>//')
+          # 格式2: 属性格式 sparkle:shortVersionString="VALUE"
           if [ -z "$VER" ]; then
-            VER=$(grep -oP '(?<=<sparkle:shortVersionString>)[^<]*' /tmp/appcast.xml)
+            VER=$(grep -oE 'sparkle:shortVersionString="[^"]*"' /tmp/appcast.xml |               head -1 | sed 's/sparkle:shortVersionString="//;s/"//')
           fi
+          # fallback: 从 sparkle:version 属性拿
           if [ -z "$VER" ]; then
-            VER=$(grep -oP '(?<=sparkle:version=")[^"]*' /tmp/appcast.xml)
+            VER=$(grep -oE 'sparkle:version="[^"]*"' /tmp/appcast.xml |               head -1 | sed 's/sparkle:version="//;s/"//')
           fi
           VERSION_INPUT="${{ inputs.version }}"
           [ -n "$VERSION_INPUT" ] && VER="$VERSION_INPUT"
