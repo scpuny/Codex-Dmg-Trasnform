@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   # ====================================================================
-  # 检测最新版本
+  # Job 1: 检测最新版本（appcast HEAD 请求，几百字节）
   # ====================================================================
   detect:
     runs-on: ubuntu-22.04
@@ -52,7 +52,6 @@ jobs:
           VER=$(grep -o 'sparkle:shortVersionString>[^<]*' /tmp/appcast.xml | head -1 | sed 's/sparkle:shortVersionString>//')
           BUILD=$(grep -o 'sparkle:version>[^<]*' /tmp/appcast.xml | head -1 | sed 's/sparkle:version>//')
 
-          # 如果用户指定了版本，使用指定的
           if [ -n "${{ inputs.version }}" ]; then
             VER="${{ inputs.version }}"
             URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
@@ -67,7 +66,6 @@ jobs:
           echo "version=${VER}" >> $GITHUB_OUTPUT
           echo "build=${BUILD}" >> $GITHUB_OUTPUT
           echo "download_url=${URL}" >> $GITHUB_OUTPUT
-
           echo "Latest: v${VER} (build ${BUILD})"
 
       - name: 对比缓存版本
@@ -96,13 +94,16 @@ jobs:
           fi
 
   # ====================================================================
-  # macOS x64: 下载官方 x64 zip → 补丁 → 签名 → DMG → 上传 patched asar
+  # Job 2: 预处理（下载 → 解压 → 补丁 ASAR → 上传共享产物）
+  # 在所有平台构建之前完成，各平台并行消费
   # ====================================================================
-  build-macos-x64:
+  prepare:
     needs: detect
     if: needs.detect.outputs.changed == 'true'
-    runs-on: macos-14
-    timeout-minutes: 120
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -129,19 +130,16 @@ jobs:
           echo "APP_PATH=${APP_PATH}" >> $GITHUB_ENV
           echo "Extracted: ${APP_PATH}"
 
-      - name: 提取 app.asar
+      - name: 提取并补丁 app.asar
         run: |
           ASAR_PATH="${{ env.APP_PATH }}/Contents/Resources/app.asar"
-          ASAR_DIR="${{ github.workspace }}/_asar"
+          ASAR_DIR="_asar"
           mkdir -p "$ASAR_DIR"
           npx asar extract "$ASAR_PATH" "$ASAR_DIR"
-          echo "ASAR_DIR=${ASAR_DIR}" >> $GITHUB_ENV
           echo "Extracted _asar/ ($(find "$ASAR_DIR" -type f | wc -l) files)"
 
-      - name: 补丁 app.asar
-        env:
-          ASAR_CONTENT_DIR: ${{ github.workspace }}/_asar
-        run: |
+          # 运行补丁
+          export ASAR_CONTENT_DIR="$PWD/$ASAR_DIR"
           for patch in scripts/patches/*.sh; do
             [ -f "$patch" ] || continue
             name=$(basename "$patch" .sh)
@@ -149,28 +147,64 @@ jobs:
             bash "$patch" 2>&1 | sed 's/^/  /'
           done
 
-      - name: 重新打包 app.asar
-        run: |
-          ASAR_PATH="${{ env.APP_PATH }}/Contents/Resources/app.asar"
-          npx asar pack "${{ env.ASAR_DIR }}" "$ASAR_PATH"
-          echo "✅ app.asar repacked ($(du -h "$ASAR_PATH" | cut -f1))"
+          # 重新打包（替换原文件）
+          npx asar pack "$ASAR_DIR" "$ASAR_PATH"
+          echo "✅ app.asar patched ($(du -h "$ASAR_PATH" | cut -f1))"
 
-      - name: 上传 patched app.asar（给 Linux 构建使用）
+      - name: 打包完整 Codex.app → tar.gz（给 macOS 构建用）
         run: |
-          mkdir -p packages/shared
-          cp "${{ env.APP_PATH }}/Contents/Resources/app.asar" packages/shared/
-          # 也上传 app.asar.unpacked（原生模块）
-          if [ -d "${{ env.APP_PATH }}/Contents/Resources/app.asar.unpacked" ]; then
-            cp -a "${{ env.APP_PATH }}/Contents/Resources/app.asar.unpacked" packages/shared/
-          fi
-          echo "✅ Shared artifacts prepared"
+          cd build-x64
+          tar czf "${{ github.workspace }}/Codex-patched.tar.gz" "Codex.app"
+          echo "✅ Codex.app tarball: $(du -h "${{ github.workspace }}/Codex-patched.tar.gz" | cut -f1)"
 
-      - name: 上传 shared artifacts
+      - name: 上传完整应用（macOS 使用）
         uses: actions/upload-artifact@v4
         with:
-          name: Codex-shared-${{ needs.detect.outputs.version }}
+          name: Codex-app-full-${{ needs.detect.outputs.version }}
+          path: Codex-patched.tar.gz
+          retention-days: 1
+
+      - name: 准备共享 ASAR（Linux 使用）
+        run: |
+          mkdir -p packages/shared
+          APP_PATH="$(find "$PWD/build-x64" -maxdepth 2 -name "Codex.app" -type d | head -1)"
+          cp "$APP_PATH/Contents/Resources/app.asar" packages/shared/
+          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
+            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" packages/shared/
+          fi
+          echo "✅ Shared ASAR prepared"
+
+      - name: 上传共享 ASAR（Linux 使用）
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-asar-shared-${{ needs.detect.outputs.version }}
           path: packages/shared/*
           retention-days: 1
+
+  # ====================================================================
+  # Job 3a: macOS x64（与 Linux 并行）
+  # ====================================================================
+  build-macos-x64:
+    needs: [detect, prepare]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 patched 完整应用
+        uses: actions/download-artifact@v4
+        with:
+          name: Codex-app-full-${{ needs.detect.outputs.version }}
+          path: .
+
+      - name: 解压
+        run: |
+          tar xzf Codex-patched.tar.gz
+          APP_PATH="$(find "$PWD" -maxdepth 2 -name "Codex.app" -type d | head -1)"
+          echo "APP_PATH=${APP_PATH}" >> $GITHUB_ENV
+          echo "Extracted: ${APP_PATH}"
 
       - name: Ad-hoc 签名
         run: |
@@ -190,9 +224,9 @@ jobs:
             -srcfolder "${{ env.APP_PATH }}" \
             -ov -format UDZO \
             "packages/macos-x64/Codex-${VERSION}-macos-x64.dmg"
-          echo "✅ DMG created"
+          echo "✅ DMG: $(du -h packages/macos-x64/Codex-${VERSION}-macos-x64.dmg | cut -f1)"
 
-      - name: 上传 macOS artifacts
+      - name: 上传 artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Codex-macos-x64-${{ needs.detect.outputs.version }}
@@ -200,10 +234,10 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Linux: 从 macOS 获取 patched app.asar + 标准 Electron 打包
+  # Job 3b: Linux（与 macOS 并行）
   # ====================================================================
   build-linux:
-    needs: [detect, build-macos-x64]
+    needs: [detect, prepare]
     if: needs.detect.outputs.changed == 'true'
     strategy:
       matrix:
@@ -217,7 +251,7 @@ jobs:
       - name: Install asar
         run: npm install -g @electron/asar
 
-      - name: 下载运行时的缓存
+      - name: 下载运行时（缓存）
         id: cache-runtime
         uses: actions/cache@v4
         with:
@@ -233,10 +267,10 @@ jobs:
             ./scripts/download-runtime.sh --platform linux --arch arm64 --output packages/linux-arm64
           fi
 
-      - name: 下载 macOS 构建好的 patched app.asar
+      - name: 下载 patched ASAR 共享产物
         uses: actions/download-artifact@v4
         with:
-          name: Codex-shared-${{ needs.detect.outputs.version }}
+          name: Codex-asar-shared-${{ needs.detect.outputs.version }}
           path: packages/shared
 
       - name: 构建 Linux 目录结构
@@ -245,11 +279,9 @@ jobs:
           LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
           mkdir -p "$LINUX_DIR/resources" "$LINUX_DIR/locales"
 
-          # 使用 patched app.asar（从 macOS 构建产物）
           cp packages/shared/app.asar "$LINUX_DIR/resources/"
-          echo "✅ app.asar copied ($(du -h "$LINUX_DIR/resources/app.asar" | cut -f1))"
+          echo "✅ app.asar ($(du -h "$LINUX_DIR/resources/app.asar" | cut -f1))"
 
-          # 复制 app.asar.unpacked（如果存在）
           if [ -d packages/shared/app.asar.unpacked ]; then
             cp -a packages/shared/app.asar.unpacked "$LINUX_DIR/resources/"
             echo "✅ app.asar.unpacked copied"
@@ -261,19 +293,16 @@ jobs:
           LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
 
           ELEC_ZIP=$(ls "$PLATFORM_DIR"/electron-*-linux-*.zip 2>/dev/null | head -1)
-          if [ -z "$ELEC_ZIP" ]; then
-            echo "❌ Electron zip not found"
-            exit 1
-          fi
+          [ -z "$ELEC_ZIP" ] && { echo "❌ Electron zip not found"; exit 1; }
 
           TMP_ELEC="$(mktemp -d)"
           unzip -q "$ELEC_ZIP" -d "$TMP_ELEC"
-          cp "$TMP_ELEC/electron" "$LINUX_DIR/electron" 2>/dev/null && chmod +x "$LINUX_DIR/electron" || true
+          cp "$TMP_ELEC/electron" "$LINUX_DIR/electron" && chmod +x "$LINUX_DIR/electron"
           for f in "$TMP_ELEC"/*.so*; do [ -f "$f" ] && cp "$f" "$LINUX_DIR/" 2>/dev/null || true; done
           for f in icudtl.dat snapshot_blob.bin v8_context_snapshot.bin LICENSES.chromium.html LICENSE.electron.txt; do
             [ -f "$TMP_ELEC/$f" ] && cp "$TMP_ELEC/$f" "$LINUX_DIR/" 2>/dev/null || true
           done
-          [ -d "$TMP_ELEC/locales" ] && cp -a "$TMP_ELEC/locales"/* "$LINUX_DIR/locales/" 2>/dev/null || true
+          [ -d "$TMP_ELEC/locales" ] && cp -a "$TMP_ELEC/locales"/* "$LINUX_DIR/locales/"
           for f in libEGL.so libGLESv2.so libvk_swiftshader.so vk_swiftshader_icd.json; do
             [ -f "$TMP_ELEC/$f" ] && cp "$TMP_ELEC/$f" "$LINUX_DIR/" 2>/dev/null || true
           done
@@ -281,28 +310,21 @@ jobs:
           echo "✅ Electron installed"
 
       - name: 原生模块处理
-        if: contains(matrix.arch, '64')
         run: |
           PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
           LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
 
           if [ -d "$LINUX_DIR/resources/app.asar.unpacked" ]; then
-            ARCH="x64"
-            [ "${{ matrix.arch }}" = "arm64" ] && ARCH="arm64"
+            ARCH="x64"; [ "${{ matrix.arch }}" = "arm64" ] && ARCH="arm64"
             ./scripts/rebuild-native-modules.sh \
-              --app "$LINUX_DIR" \
-              --platform linux \
-              --arch "$ARCH" \
+              --app "$LINUX_DIR" --platform linux --arch "$ARCH" \
               2>&1 | sed 's/^/  /'
             echo "✅ Native modules processed"
           fi
 
       - name: 添加启动脚本
         run: |
-          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
-          LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
-
-          # 启动脚本（不用 heredoc 避免缩进问题）
+          LINUX_DIR="packages/linux-${{ matrix.arch }}/Codex-linux-${{ matrix.arch }}"
           printf '%s\n' \
             '#!/usr/bin/env bash' \
             'set -euo pipefail' \
@@ -330,10 +352,10 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # 发布 Release
+  # Job 4: 发布 Release（等所有构建完成）
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64, build-linux]
+    needs: [detect, prepare, build-macos-x64, build-linux]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
@@ -359,6 +381,7 @@ jobs:
             ## Codex ${{ needs.detect.outputs.version }}
 
             **来源**: 官方 Codex-darwin-x64 appcast
+            **构建时间**: ${{ github.event.repository.updated_at }}
 
             **补丁**:
             - ✅ i18n 强制启用（中文设置可用）
@@ -367,15 +390,14 @@ jobs:
             - ✅ AppSunset 强制更新禁用
             - ✅ Ad-hoc 已签名
 
-            **平台**:
+            **下载**:
             | 平台 | 文件 |
             |------|------|
             | macOS Intel (x64) | `.dmg` |
-            | Linux amd64 | `.tar.gz` + `.deb` |
-            | Linux arm64 | `.tar.gz` + `.deb` |
+            | Linux amd64 | `.tar.gz` |
+            | Linux arm64 | `.tar.gz` |
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.tar.gz
-            artifacts/**/*.deb
           draft: false
           prerelease: false
