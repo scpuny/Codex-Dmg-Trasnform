@@ -220,13 +220,12 @@ jobs:
             -ov -format ULFO "out/Codex-${VERSION}-macos-x64.dmg"
           echo "DMG: $(ls -lh out/*.dmg)"
 
-      - name: 创建 ZIP（和官方 appcast 同规格）
+      - name: 创建 ZIP（官方同规格，最大压缩）
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
-          # ditto -ck 创建 PKZip 格式，保留 macOS 资源分支
-          ditto -c -k --sequesterRsrc --keepParent \
-            "build-patch/Codex.app" \
-            "out/Codex-${VERSION}-macos-x64.zip"
+          cd "build-patch"
+          zip -r -9 --symlinks -X "../out/Codex-${VERSION}-macos-x64.zip" "Codex.app"
+          cd "${{ github.workspace }}"
           echo "ZIP: $(ls -lh out/*.zip)"
 
       - name: 上传 DMG
