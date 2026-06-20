@@ -2,173 +2,128 @@
 
 ## Project Overview
 
-This project disassembles and repackages **Codex.app** (OpenAI's desktop Electron application) from the original `Codex.dmg` (macOS ARM64) into cross-platform distributable packages.
+This project downloads the official **Codex.app** (OpenAI's desktop Electron application) for Intel Mac (x86_64) from OpenAI's CDN, patches the ASAR to fix i18n/DevTools/updater issues, re-signs it, and creates a distributable `.dmg`. It also builds Linux packages from the same source.
 
-**Original source**: `Codex.dmg` — a macOS disk image containing `Codex.app` (version 26.611.62324, Electron/Chromium 149).
+**Original source**: `appcast-x64.xml` → official `Codex-darwin-x64-{version}.zip`
 
 ## Project Structure
 
 ```
 /
-├── Codex.dmg                    # Original macOS disk image (read-only source)
 ├── AGENTS.md                    # This file
 ├── Design.md                    # Architecture & design document
 ├── scripts/
-│   ├── extract.sh               # Extract app from Codex.dmg
-│   ├── info.sh                  # Print version/platform info
-│   ├── pack-macos-x64.sh        # Build macOS Intel package
+│   ├── common.sh                # Shared functions
+│   ├── pack-macos-x64.sh        # Download → patch → sign → DMG
 │   ├── pack-linux-amd64.sh      # Build Linux amd64 package
 │   ├── pack-linux-arm64.sh      # Build Linux arm64 package
-│   ├── pack-windows.sh          # Build Windows package
-│   ├── rebuild-native-modules.sh# Rebuild native Node modules per platform
-│   └── download-runtime.sh      # Download platform-specific runtimes
-├── packages/                    # Build output per platform
-│   ├── macos-x64/
-│   ├── linux-amd64/
-│   ├── linux-arm64/
-│   └── windows/
+│   ├── patches/
+│   │   ├── patch-i18n.sh        # Force-enable i18n (中文)
+│   │   ├── patch-copyright.sh   # Update copyright text
+│   │   ├── patch-devtools.sh    # Enable DevTools
+│   │   ├── patch-updater.sh     # Disable auto-updater
+│   │   └── patch-sunset.sh      # Disable appSunset gate
+│   ├── patch-all.sh             # Run all patches in sequence
+│   ├── patch-util.sh            # Shared patch utilities
+│   ├── rebuild-native-modules.sh# Native module handling (Linux)
+│   ├── extract.sh               # Extract Codex.app from DMG (Linux)
+│   ├── download-runtime.sh      # Download Electron/Node.js (Linux)
+│   └── info.sh                  # Print app info
 ├── .github/workflows/
-│   ├── build-macos-x64.yml
-│   ├── build-linux-amd64.yml
-│   ├── build-linux-arm64.yml
-│   ├── build-windows.yml
-│   └── release-all.yml          # Aggregate release workflow
+│   └── download-and-patch.yml   # Auto-detect + build + release
+├── packages/
+│   ├── macos-x64/               # macOS Intel output
+│   ├── linux-amd64/             # Linux amd64 output
+│   └── linux-arm64/             # Linux arm64 output
 ```
 
-## Key Architectural Components
+## CI/CD (GitHub Actions)
 
-| Component | Description | Cross-Platform Strategy |
-|---|---|---|
-| `Codex.app` (Electron shell) | Electron app wrapper (Chromium 149-based) | Rebuild with per-platform Electron binary |
-| `Resources/app.asar` | Electron frontend bundle (153 MB) | Platform-agnostic (same asar for all) |
-| `Resources/codex` | AI backend binary (236 MB, Go/Rust) | Cross-compile per platform |
-| `Resources/codex_chronicle` | Chronicle service binary (4.5 MB) | Cross-compile per platform |
-| `Resources/cua_node/` | Custom Node.js runtime (Node 24.14) | Download per-platform Node.js build |
-| `Frameworks/Sparkle.framework` | Auto-update framework (macOS only) | Replace with platform updater (Squirrel/Nsis) |
+**Workflow**: `.github/workflows/download-and-patch.yml`
+**Schedule**: `cron: '0 */6 * * *'` (every 6 hours)
+**Manual**: `workflow_dispatch` with optional version override
 
-## Coding Conventions
-
-- **Shell scripts**: Bash 5+, use `set -euo pipefail`, prefer `$()` over backticks
-- **Line endings**: LF for shell scripts, CRLF only for Windows `.ps1`/`.bat`
-- **Error handling**: Always check exit codes, provide meaningful error messages
-- **Documentation**: Keep Design.md and AGENTS.md in sync with code changes
-- **Testing**: Test each packaging script on the target platform CI runner
-
-## CI/CD
-
-- All packaging runs via **GitHub Actions**
-- Matrix builds across:
-  - `macos-13` (macOS Intel x64)
-  - `macos-14` (macOS ARM64, large runner)
-  - `ubuntu-22.04` (Linux x64)
-  - `ubuntu-22.04-arm` (Linux ARM64)
-  - `windows-2022` (Windows x64)
-- Release artifacts uploaded as `.dmg` (macOS), `.deb`/`.AppImage` (Linux), `.exe`/`.msi` (Windows)
-
-## Important Notes
-
-- The original `Codex.dmg` is ~486 MB compressed, ~1.9 GB expanded
-- `app.asar` is platform-agnostic — no modification needed for cross-platform
-- Native Node modules (`node-pty`, `better-sqlite3`, `objc-js`, `node-mac-permissions`) must be rebuilt per platform
-- `codex` binary needs to be cross-compiled from source (Go/Rust) — download prebuilt if available
-- `cua_node` runtime needs per-platform Node.js builds
-- Sparkle framework is macOS-only; use electron-updater or Squirrel for other platforms
-
-## Auto-Download & Version Detection
-
-**Codex.dmg** is automatically downloaded from OpenAI's official CDN during CI builds:
-
-```
-URL: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
-```
-
-### Version Detection（无需下载 DMG）
-
-仅用 **HTTP HEAD 请求**（几百字节流量）检测远程文件是否更新：
-
-```bash
-# 获取下载地址
-./scripts/check-version.sh --url
-
-# 获取远程文件指纹（HEAD 请求，不下载文件体）
-./scripts/check-version.sh --remote
-# → Wed, 17 Jun 2026 14:52:47 GMT:486144300
-
-# 对比远程 vs 本地缓存（exit 0=相同, 1=有新版本）
-./scripts/check-version.sh --check
-
-# 从已提取的 Codex.app 读取版本号
-./scripts/check-version.sh --app build/extracted/Codex.app
-# → 26.611.62324 (build 4028)
-```
-
-### 自动构建流程（GitHub Actions）
-
-工作流 `auto-detect-and-build.yml` 每 6 小时运行一次：
+### Build Flow
 
 ```mermaid
 graph TD
-    A[Cron: 每6小时] --> B[HEAD请求检测远程指纹]
-    B --> C{指纹变化?}
-    C -->|无变化| Z[结束, 0流量]
-    C -->|有变化| D[下载 Codex.dmg 486MB]
-    D --> E[并行构建4个平台]
-    E --> F[创建 GitHub Release]
+    A[Cron: 每6小时] --> B[解析 appcast-x64.xml]
+    B --> C{新版本?}
+    C -->|无变化| Z[跳过, 0流量]
+    C -->|有变化| D[下载 Codex-darwin-x64-*.zip 460MB]
+    D --> E[macOS: 解压 → 补丁 ASAR → 签名 → DMG]
+    D --> F[Linux: 从 DMG 提取 → 补丁 ASAR → Electron 打包]
+    E --> G[上传 artifacts + Release]
+    F --> G
 ```
 
-**对于 `workflow_dispatch` 手动触发**：支持 `force` 参数跳过缓存强制构建。
+### Version Detection
+
+The workflow parses `appcast-x64.xml` (OpenAI's Sparkle appcast) to get the latest version URL. It compares with `.codex-x64-version` cache file to avoid redundant builds. Only downloads the full zip (~460MB) when a new version is detected.
+
+## Patches
+
+All patches modify the extracted `_asar/` content before repacking `app.asar`:
+
+| Patch | What it does | Target Files |
+|-------|-------------|-------------|
+| `patch-i18n.sh` | Replace `X.get("enable_i18n", ...)` → `!0` | `webview/assets/*.js` |
+| `patch-copyright.sh` | Update copyright string | `.vite/build/main-*.js` |
+| `patch-devtools.sh` | Force-enable InspectElement/DevTools | `.vite/build/main-*.js` |
+| `patch-updater.sh` | Return `!1` from updater methods | `.vite/build/*.js` |
+| `patch-sunset.sh` | Return `!1` from sunset gate calls | `webview/assets/index-*.js` |
+
+## macOS x64 Build
+
+### Key Difference from ARM64
+
+- Official x64 zip uses **Codex Framework.framework** with `electron_common_owl_features` native binding
+- This is a **native Electron framework** (not the standard open-source Electron), so we **keep the original framework**
+- We only patch the `app.asar` (frontend bundle) and re-sign
 
 ### Manual Build
 
 ```bash
-# Download + extract in one step
-./scripts/extract.sh --download
-
-# Or specify extraction only from existing DMG
-./scripts/extract.sh --dmg Codex.dmg
+./scripts/pack-macos-x64.sh                  # Download latest + patch + DMG
+./scripts/pack-macos-x64.sh --check          # Preflight only
+./scripts/pack-macos-x64.sh --version 26.616.32156  # Specific version
 ```
 
-### 前置检查（打包前验证完整性）
+## Linux Build
 
-**`./scripts/pack-linux-amd64.sh --check`** 会在打包前检查所有必需文件：
+Linux builds use:
+1. **Codex.dmg** (ARM64) extracted on Linux using `apfs-fuse`
+2. **Standard Electron** (35.1.0) for the runtime shell
+3. **app.asar** from Codex (platform-agnostic, same patches applied)
+4. Native modules rebuilt via `rebuild-native-modules.sh`
 
-```
-❌ 发现 N 个错误，请修复后重试
-```
+### Missing Components
 
-| 检查项 | 必需 | 说明 |
-|--------|------|------|
-| `Codex.app` | ✅ | 从 DMG 提取 |
-| `app.asar` | ✅ | Electron 前端 |
-| Electron 运行时 | ✅ | 从 GitHub Releases 下载 |
-| Node.js 24.14 | ✅ | 从 nodejs.org 下载 |
-| `codex` 后端 | ⚠️ | 可选，无此文件 UI 可启动但后端不可用 |
-| `codex_chronicle` | ⚠️ | 可选 |
-| 应用图标 | ✅ | 从原始 app 提取 |
+Linux builds currently lack:
+- `codex` / `codex_chronicle` backend binaries (need cross-compilation from source)
+- `cua_node` Node.js runtime is provided but backend may not function without the `codex` binary
 
-### 修复缺失文件
+## Native Module Rebuild
 
 ```bash
-# 下载 Electron + Node.js（在 CI 环境可正常工作）
-./scripts/download-runtime.sh --platform linux --arch x64
-
-# 手动下载 Electron 放到指定位置
-curl -fSL https://github.com/electron/electron/releases/download/v35.1.0/electron-v35.1.0-linux-x64.zip \\
-  -o packages/linux-amd64/electron-35.1.0-linux-x64.zip
+./scripts/rebuild-native-modules.sh --app <dir> --platform <os> --arch <arch>
 ```
 
-### 完整打包流程
+| Module | Strategy | Details |
+|---|---|---|
+| `node-pty` | `prebuilt` | From npm pack (N-API) |
+| `better-sqlite3` | `prebuilt` | Electron ABI 133 download |
+| `@serialport/bindings-cpp` | `prebuilt` | Reuse cross-platform prebuilds |
+| `classic-level` | `prebuilt` | Reuse cross-platform prebuilds |
+| `node-hid` | `limited-pb` | Only darwin-arm64 prebuild |
+| `node-mac-permissions` | `mac-only` | macOS-only |
+| `objc-js` | `mac-only` | macOS-only |
+| `@worklouder` | `prebuilt` | Nested native deps only |
 
-```bash
-# 1. 下载并提取
-./scripts/extract.sh --download
+## Coding Conventions
 
-# 2. 下载运行时
-./scripts/download-runtime.sh --platform linux --arch x64
-
-# 3. 前置检查
-./scripts/pack-linux-amd64.sh --check
-
-# 4. 确定无误后打包
-./scripts/pack-linux-amd64.sh
-```
+- **Shell scripts**: Bash 3.2+ compatible (macOS default), `set -euo pipefail`
+- **Line endings**: LF for shell scripts
+- **Error handling**: Check exit codes, meaningful error messages
+- **Patches**: Python3 for complex regex, sed for simple replacements
+- **Documentation**: Keep AGENTS.md in sync with code changes

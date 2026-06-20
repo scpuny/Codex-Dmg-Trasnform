@@ -1,6 +1,9 @@
 name: Download & Patch Codex x64
 
 on:
+  schedule:
+    # 每 6 小时检查一次 Open AI 官方 appcast-x64.xml 是否有新版本
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       force:
