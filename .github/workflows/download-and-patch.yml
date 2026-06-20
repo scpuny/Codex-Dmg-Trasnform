@@ -191,9 +191,9 @@ jobs:
           name: Codex-asar-patched-${{ needs.detect.outputs.version }}
           path: patched-asar
 
-      - name: 解压 → 替换 ASAR → 签名 → DMG
+      - name: 解压 → 替换 ASAR → 更新 Integrity → 移除签名 → DMG
         run: |
-          # 解压（保留原始结构）
+          # 解压
           unzip -q "Codex-x64.zip" -d "build-x64"
           APP_PATH="$(find "$PWD/build-x64" -maxdepth 2 -name "Codex.app" -type d | head -1)"
           echo "App: ${APP_PATH}"
@@ -202,11 +202,16 @@ jobs:
           cp "patched-asar/app.asar" "$APP_PATH/Contents/Resources/app.asar"
           echo "✅ app.asar replaced"
 
-          # 签名
+          # 更新 ElectronAsarIntegrity 哈希
+          ./scripts/update-integrity.sh "$APP_PATH"
+
+          # 移除原签名（签名已不匹配，保留会导致"已损坏"错误）
           codesign --remove-signature "$APP_PATH" 2>/dev/null || true
+          # 移除隔离属性
           xattr -rd com.apple.quarantine "$APP_PATH" 2>/dev/null || true
-          codesign --sign - --force --deep "$APP_PATH"
-          echo "✅ Ad-hoc signed"
+          # 不重新签名 → app 为 unsigned
+          # macOS 行为: 第一次显示"无法验证开发者"但提供"打开"按钮
+          echo "✅ Signature removed, app is unsigned (one-time gatekeeper dialog)"
 
           # DMG
           VERSION="${{ needs.detect.outputs.version }}"
