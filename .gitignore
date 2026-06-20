@@ -32,3 +32,9 @@ desktop.ini
 
 # Logs
 *.log
+
+# Original Codex app source files (extracted from DMG)
+package.json
+
+# Old version cache (replaced by .codex-x64-version)
+.codex-version

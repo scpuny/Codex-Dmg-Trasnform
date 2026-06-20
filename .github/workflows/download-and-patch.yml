@@ -92,13 +92,15 @@ jobs:
           fi
 
   # ====================================================================
-  # macOS x64: 下载官方 zip → 补丁 → 打包 → 发布
+  # macOS x64: 下载官方 x64 zip → 补丁 → 签名 → DMG → 上传 patched asar
   # ====================================================================
   build-macos-x64:
     needs: detect
     if: needs.detect.outputs.changed == 'true'
     runs-on: macos-14
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -151,6 +153,23 @@ jobs:
           npx asar pack "${{ env.ASAR_DIR }}" "$ASAR_PATH"
           echo "✅ app.asar repacked ($(du -h "$ASAR_PATH" | cut -f1))"
 
+      - name: 上传 patched app.asar（给 Linux 构建使用）
+        run: |
+          mkdir -p packages/shared
+          cp "${{ env.APP_PATH }}/Contents/Resources/app.asar" packages/shared/
+          # 也上传 app.asar.unpacked（原生模块）
+          if [ -d "${{ env.APP_PATH }}/Contents/Resources/app.asar.unpacked" ]; then
+            cp -a "${{ env.APP_PATH }}/Contents/Resources/app.asar.unpacked" packages/shared/
+          fi
+          echo "✅ Shared artifacts prepared"
+
+      - name: 上传 shared artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-shared-${{ needs.detect.outputs.version }}
+          path: packages/shared/*
+          retention-days: 1
+
       - name: Ad-hoc 签名
         run: |
           codesign --remove-signature "${{ env.APP_PATH }}" 2>/dev/null || true
@@ -171,7 +190,7 @@ jobs:
             "packages/macos-x64/Codex-${VERSION}-macos-x64.dmg"
           echo "✅ DMG created"
 
-      - name: 上传 artifacts
+      - name: 上传 macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Codex-macos-x64-${{ needs.detect.outputs.version }}
@@ -179,30 +198,19 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Linux: 从 DMG 提取 app.asar → 补丁 → 用标准 Electron 打包
+  # Linux: 从 macOS 获取 patched app.asar + 标准 Electron 打包
   # ====================================================================
   build-linux:
-    needs: detect
+    needs: [detect, build-macos-x64]
     if: needs.detect.outputs.changed == 'true'
     strategy:
       matrix:
         arch: [amd64, arm64]
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq p7zip-full dmg2img fuse libfuse-dev cmake build-essential
-          sudo modprobe fuse || true
-          # apfs-fuse
-          git clone --depth 1 https://github.com/eafer/apfs-fuse.git /tmp/apfs-fuse
-          cd /tmp/apfs-fuse && mkdir build && cd build
-          cmake .. && make -j$(nproc) && sudo make install
-          cd /tmp && rm -rf /tmp/apfs-fuse
 
       - name: Install asar
         run: npm install -g @electron/asar
@@ -223,46 +231,94 @@ jobs:
             ./scripts/download-runtime.sh --platform linux --arch arm64 --output packages/linux-arm64
           fi
 
-      - name: 下载 Codex.dmg
-        run: |
-          curl -fSLk --connect-timeout 30 --max-time 600 --retry 3 \
-            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
-            -o Codex.dmg
-          echo "Downloaded: $(du -h Codex.dmg | cut -f1)"
+      - name: 下载 macOS 构建好的 patched app.asar
+        uses: actions/download-artifact@v4
+        with:
+          name: Codex-shared-${{ needs.detect.outputs.version }}
+          path: packages/shared
 
-      - name: 提取 Codex.app（Linux 上用 apfs-fuse）
+      - name: 构建 Linux 目录结构
         run: |
-          ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
-          ls -la build/extracted/Codex.app
+          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
+          LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
+          mkdir -p "$LINUX_DIR/resources" "$LINUX_DIR/locales"
 
-      - name: 提取并补丁 app.asar
+          # 使用 patched app.asar（从 macOS 构建产物）
+          cp packages/shared/app.asar "$LINUX_DIR/resources/"
+          echo "✅ app.asar copied ($(du -h "$LINUX_DIR/resources/app.asar" | cut -f1))"
+
+          # 复制 app.asar.unpacked（如果存在）
+          if [ -d packages/shared/app.asar.unpacked ]; then
+            cp -a packages/shared/app.asar.unpacked "$LINUX_DIR/resources/"
+            echo "✅ app.asar.unpacked copied"
+          fi
+
+      - name: 安装 Electron
         run: |
-          ASAR_PATH="build/extracted/Codex.app/Contents/Resources/app.asar"
-          ASAR_DIR="_asar"
-          mkdir -p "$ASAR_DIR"
-          npx asar extract "$ASAR_PATH" "$ASAR_DIR"
+          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
+          LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
 
-          # 运行补丁
-          export ASAR_CONTENT_DIR="$PWD/$ASAR_DIR"
-          for patch in scripts/patches/*.sh; do
-            [ -f "$patch" ] || continue
-            name=$(basename "$patch" .sh)
-            echo "== Running: $name =="
-            bash "$patch" 2>&1 | sed 's/^/  /'
+          ELEC_ZIP=$(ls "$PLATFORM_DIR"/electron-*-linux-*.zip 2>/dev/null | head -1)
+          if [ -z "$ELEC_ZIP" ]; then
+            echo "❌ Electron zip not found"
+            exit 1
+          fi
+
+          TMP_ELEC="$(mktemp -d)"
+          unzip -q "$ELEC_ZIP" -d "$TMP_ELEC"
+          cp "$TMP_ELEC/electron" "$LINUX_DIR/electron" 2>/dev/null && chmod +x "$LINUX_DIR/electron" || true
+          for f in "$TMP_ELEC"/*.so*; do [ -f "$f" ] && cp "$f" "$LINUX_DIR/" 2>/dev/null || true; done
+          for f in icudtl.dat snapshot_blob.bin v8_context_snapshot.bin LICENSES.chromium.html LICENSE.electron.txt; do
+            [ -f "$TMP_ELEC/$f" ] && cp "$TMP_ELEC/$f" "$LINUX_DIR/" 2>/dev/null || true
           done
+          [ -d "$TMP_ELEC/locales" ] && cp -a "$TMP_ELEC/locales"/* "$LINUX_DIR/locales/" 2>/dev/null || true
+          for f in libEGL.so libGLESv2.so libvk_swiftshader.so vk_swiftshader_icd.json; do
+            [ -f "$TMP_ELEC/$f" ] && cp "$TMP_ELEC/$f" "$LINUX_DIR/" 2>/dev/null || true
+          done
+          rm -rf "$TMP_ELEC"
+          echo "✅ Electron installed"
 
-          # 重新打包
-          npx asar pack "$ASAR_DIR" "$ASAR_PATH"
-          echo "✅ app.asar repacked ($(du -h "$ASAR_PATH" | cut -f1))"
+      - name: 原生模块处理
+        if: contains(matrix.arch, '64')
+        run: |
+          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
+          LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
 
-      - name: 打包 Linux
+          if [ -d "$LINUX_DIR/resources/app.asar.unpacked" ]; then
+            ARCH="x64"
+            [ "${{ matrix.arch }}" = "arm64" ] && ARCH="arm64"
+            ./scripts/rebuild-native-modules.sh \
+              --app "$LINUX_DIR" \
+              --platform linux \
+              --arch "$ARCH" \
+              2>&1 | sed 's/^/  /'
+            echo "✅ Native modules processed"
+          fi
+
+      - name: 添加启动脚本
+        run: |
+          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
+          LINUX_DIR="$PLATFORM_DIR/Codex-linux-${{ matrix.arch }}"
+
+          # 启动脚本（不用 heredoc 避免缩进问题）
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' \
+            'export ELECTRON_IS_DEV=0' \
+            'exec "$DIR/electron" "$DIR/resources/app.asar" "$@"' \
+            > "$LINUX_DIR/Codex.sh"
+          chmod +x "$LINUX_DIR/Codex.sh"
+
+      - name: 打包 tar.gz
         run: |
           VERSION="${{ needs.detect.outputs.version }}"
-          if [ "${{ matrix.arch }}" = "amd64" ]; then
-            ./scripts/pack-linux-amd64.sh --app "$PWD/build/extracted/Codex.app"
-          else
-            ./scripts/pack-linux-arm64.sh --app "$PWD/build/extracted/Codex.app"
-          fi
+          PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
+          LINUX_DIR="Codex-linux-${{ matrix.arch }}"
+
+          tar czf "$PLATFORM_DIR/Codex-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
+            -C "$PLATFORM_DIR" "$LINUX_DIR"
+          echo "✅ tar.gz created"
 
       - name: 上传 artifacts
         uses: actions/upload-artifact@v4
