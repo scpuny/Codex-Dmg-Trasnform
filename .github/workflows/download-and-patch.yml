@@ -41,9 +41,10 @@ jobs:
 
       - name: 获取 AppCast
         run: |
-          APPCAST=$(curl -fsSLk "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml" 2>/dev/null)
+          APPCAST=$(curl -fsSLk \
+            "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml" \
+            2>/dev/null)
           echo "$APPCAST" > /tmp/appcast.xml
-          echo "AppCast fetched"
 
       - name: 解析最新版本
         id: parse
@@ -87,13 +88,14 @@ jobs:
           fi
 
   # ====================================================================
-  # Job 2: Build macOS Intel (x86_64) — DMG
+  # Job 2: prepare — 下载 → 提取 → 补丁 → 上传产物
+  # 在 Ubuntu 上完成，不长期占用 macos runner
   # ====================================================================
-  build-macos-x64:
+  prepare:
     needs: detect
     if: needs.detect.outputs.changed == 'true'
-    runs-on: macos-13
-    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -102,43 +104,130 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - name: Install dependencies
+      - name: Install npm deps
         run: npm ci
 
-      - name: 下载并提取上游 x64 包
-        run: node scripts/sync-upstream.js --skip-arm64
+      - name: 下载官方 x64 ZIP
+        run: |
+          URL="${{ needs.detect.outputs.download_url }}"
+          curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 \
+            "$URL" -o "Codex-x64.zip"
+          echo "Downloaded: $(du -h Codex-x64.zip | cut -f1)"
 
-      - name: 打补丁（AST-based patches）
-        run: node scripts/patch-all.js mac-x64
+      - name: 提取 Codex.app 结构 + ASAR
+        run: |
+          mkdir -p tmp-extract
+          7z x -y "Codex-x64.zip" -o"tmp-extract" 2>/dev/null
+          APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
+          [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
+          echo "Found: ${APP_PATH}"
 
-      - name: 构建 + 重签 + DMG
-        run: node scripts/build-from-upstream.js --platform mac-x64
+          # 保存完整的 .app 结构（macOS 构建需要框架 + Info.plist）
+          mkdir -p build-patch/Codex.app/Contents
+          for d in Frameworks MacOS PlugIns Resources; do
+            [ -d "$APP_PATH/Contents/$d" ] && cp -a "$APP_PATH/Contents/$d" "build-patch/Codex.app/Contents/$d"
+          done
+          cp "$APP_PATH/Contents/Info.plist" "build-patch/Codex.app/Contents/Info.plist"
 
-      - name: 上传 DMG 产物
+          # 提取 app.asar → _asar/（补丁目标）
+          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "build-patch/_asar"
+          echo "Extracted _asar: $(find build-patch/_asar -type f | wc -l) files"
+
+          # app.asar.unpacked（Linux 参考）
+          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
+            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "build-patch/"
+          fi
+
+          rm -rf tmp-extract Codex-x64.zip
+
+      - name: 打补丁（AST-based）
+        run: |
+          export ASAR_CONTENT_DIR="$PWD/build-patch/_asar"
+          node scripts/patch-all.js mac-x64
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-patch-${{ needs.detect.outputs.version }}
+          path: build-patch/
+          retention-days: 7
+
+  # ====================================================================
+  # Job 3: macOS Intel (x86_64) — DMG
+  # 轻量级：重打包 ASAR → 更新 integrity → 签名 → DMG
+  # ====================================================================
+  build-macos-x64:
+    needs: prepare
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: macos-13
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: 下载 prepare 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: build-patch-${{ needs.detect.outputs.version }}
+          path: build-patch/
+
+      - name: 重建 app.asar
+        run: |
+          rm -f "build-patch/Codex.app/Contents/Resources/app.asar"
+          npx asar pack "build-patch/_asar" "build-patch/Codex.app/Contents/Resources/app.asar"
+          echo "Repacked: $(ls -lh build-patch/Codex.app/Contents/Resources/app.asar | awk '{print $5}')"
+
+      - name: 更新 ElectronAsarIntegrity
+        run: |
+          node -e '
+          const c = require("crypto"), f = require("fs");
+          const a = "build-patch/Codex.app/Contents/Resources/app.asar";
+          const p = "build-patch/Codex.app/Contents/Info.plist";
+          const b = f.readFileSync(a);
+          const hash = c.createHash("sha256").update(b.slice(16, 16 + b.readUInt32LE(12))).digest("hex");
+          require("child_process").execSync("plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.hash -string " + hash + " " + p, {stdio:"pipe"});
+          require("child_process").execSync("plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.algorithm -string SHA256 " + p, {stdio:"pipe"});
+          console.log("Integrity hash:", hash.slice(0, 16) + "...");
+          '
+
+      - name: 移除原签名
+        run: |
+          codesign --remove-signature "build-patch/Codex.app" 2>/dev/null || true
+          xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
+
+      - name: Ad-hoc 重签
+        run: |
+          codesign --sign - --force --deep "build-patch/Codex.app"
+          codesign -dvvv "build-patch/Codex.app" 2>&1 | grep -E "Authority=|Signed Time|Sealed Resources" || true
+          echo "Ad-hoc signed OK"
+
+      - name: 创建 DMG
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          mkdir -p out
+          hdiutil create -volname Codex -srcfolder "build-patch/Codex.app" -ov -format UDZO "out/Codex-${VERSION}-macos-x64.dmg"
+          echo "DMG: $(ls -lh out/*.dmg)"
+
+      - name: 上传 DMG
         uses: actions/upload-artifact@v4
         with:
           name: Codex-macOS-x64-${{ needs.detect.outputs.version }}
-          path: out/mac-x64/*.dmg
-          retention-days: 90
-
-      - name: 上传 tar.gz 备用
-        run: |
-          VERSION="${{ needs.detect.outputs.version }}"
-          if [ -d "out/mac-x64" ]; then
-            tar czf "Codex-${VERSION}-macos-x64.tar.gz" -C "out/mac-x64" Codex.app
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Codex-macOS-x64-tar-${{ needs.detect.outputs.version }}
-          path: Codex-*-macos-x64.tar.gz
+          path: out/*.dmg
           retention-days: 90
 
   # ====================================================================
-  # Job 3: Build Linux (amd64 + arm64) — tar.gz
+  # Job 4: Linux (amd64 + arm64)
+  # 使用已补丁的 _asar + 标准 Electron
   # ====================================================================
   build-linux:
-    needs: detect
+    needs: prepare
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     strategy:
@@ -162,68 +251,38 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: 确定下载 URL
-        id: urls
-        run: |
-          VERSION="${{ needs.detect.outputs.version }}"
-          echo "x64_url=https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VERSION}.zip" >> $GITHUB_OUTPUT
-
-      - name: 下载 macOS x64 ZIP
-        run: |
-          curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 \
-            "${{ steps.urls.outputs.x64_url }}" -o "Codex-x64.zip"
-          echo "Downloaded: $(du -h Codex-x64.zip | cut -f1)"
-
-      - name: 提取 ASAR 内容
-        run: |
-          mkdir -p src/mac-x64
-          7z x -y "Codex-x64.zip" -o"tmp-extract" 2>/dev/null
-          APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
-          [ -z "$APP_PATH" ] && { echo "❌ Codex.app not found"; exit 1; }
-          echo "Found: ${APP_PATH}"
-
-          # Extract app.asar → _asar/
-          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
-
-          # Copy app.asar.unpacked if exists
-          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
-            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "src/mac-x64/"
-          fi
-
-          # Copy other resources
-          for e in "$APP_PATH/Contents/Resources/"*; do
-            bn="$(basename "$e")"
-            [ "$bn" = "app.asar" ] || [ "$bn" = "app.asar.unpacked" ] && continue
-            [ "$bn" = "en.lproj" ] || [ "$bn" = "zh_CN.lproj" ] && continue
-            cp -a "$e" "src/mac-x64/"
-          done
-
-          rm -rf tmp-extract
-          echo "Extracted: $(find src/mac-x64/_asar -type f | wc -l) files in _asar/"
-
-      - name: 打补丁（AST-based patches）
-        run: node scripts/patch-all.js mac-x64
+      - name: 下载 prepare 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: build-patch-${{ needs.detect.outputs.version }}
+          path: build-patch/
 
       - name: Prepare for Linux build
-        run: node scripts/prepare-src.js --platform linux-${{ matrix.arch }}
+        run: |
+          mkdir -p src/mac-x64
+          cp -a build-patch/_asar src/mac-x64/
+          if [ -d "build-patch/app.asar.unpacked" ]; then
+            cp -a build-patch/app.asar.unpacked src/mac-x64/
+          fi
+          node scripts/prepare-src.js --platform linux-${{ matrix.arch }}
 
       - name: Rebuild native modules
-        run: npm run rebuild:native 2>&1 || echo "⚠️  electron-rebuild had warnings"
+        run: npm run rebuild:native 2>&1 || echo "electron-rebuild had warnings"
 
       - name: Sync native modules
         run: node scripts/sync-native-modules.js --platform linux-${{ matrix.arch }}
 
-      - name: 构建 Linux 包
+      - name: Forge build
         run: |
           rm -rf out
           npx electron-forge make --platform=linux --arch=${{ matrix.arch }} 2>&1 || {
-            echo "⚠️  Forge build incomplete, building fallback..."
-            PLATFORM_DIR="packages/linux-${{ matrix.arch }}"
-            mkdir -p "$PLATFORM_DIR"
-            tar czf "$PLATFORM_DIR/Codex-${{ needs.detect.outputs.version }}-linux-${{ matrix.arch }}.tar.gz" -C src .
+            echo "Forge incomplete, creating fallback tar.gz..."
+            mkdir -p "packages/linux-${{ matrix.arch }}"
+            VERSION="${{ needs.detect.outputs.version }}"
+            tar czf "packages/linux-${{ matrix.arch }}/Codex-${VERSION}-linux-${{ matrix.arch }}.tar.gz" -C src .
           }
 
-      - name: 上传 Linux 产物
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: Codex-linux-${{ matrix.arch }}-${{ needs.detect.outputs.version }}
@@ -235,28 +294,24 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Job 4: 发布 Release
+  # Job 5: 发布 Release
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64, build-linux]
+    needs: [detect, prepare, build-macos-x64, build-linux]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: 下载所有 artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
       - name: 列出产物
         run: |
           find artifacts -type f | sort
-          echo "---"
           du -sh artifacts/*/
 
-      - name: 创建 Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.detect.outputs.version }}-x64
           name: "Codex ${{ needs.detect.outputs.version }} (x64)"
@@ -266,11 +321,13 @@ jobs:
             **来源**: 官方 Codex-darwin-x64 appcast
 
             **补丁**:
-            - ✅ i18n 强制启用（中文设置可用）
+            - ✅ i18n 强制启用
             - ✅ DevTools 启用
             - ✅ 自动更新禁用
-            - ✅ AppSunset 强制更新禁用
-            - ✅ 保留原始 Codex Framework（签名完整）
+            - ✅ AppSunset 禁用
+            - ✅ Fast mode 解锁
+            - ✅ Plugin auth 绕过
+            - ✅ 保留原始 Codex Framework
             - ✅ ElectronAsarIntegrity 已更新
 
             **下载**:
