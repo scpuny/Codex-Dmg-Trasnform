@@ -129,21 +129,24 @@ jobs:
           done
           cp "$APP_PATH/Contents/Info.plist" "build-patch/Codex.app/Contents/Info.plist"
 
-          # 提取 app.asar → _asar/（补丁目标）
-          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "build-patch/_asar"
-          echo "Extracted _asar: $(find build-patch/_asar -type f | wc -l) files"
+          # v1: 保存 .app 完整结构（macOS 构建需要）+ 复制 Info.plist
+          # 注：_asar 内容 patch-all.js 期望在 src/mac-x64/_asar/ 下
+          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
+          echo "Extracted _asar: $(find src/mac-x64/_asar -type f | wc -l) files"
 
-          # app.asar.unpacked（Linux 参考）
+          # v2: 同时复制一份到 build-patch/_asar（macOS 构建阶段重打包用）
+          cp -a src/mac-x64/_asar build-patch/_asar
+
+          # app.asar.unpacked（Linux 参考 + macOS 原生模块）
           if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
+            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "src/mac-x64/"
             cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "build-patch/"
           fi
 
           rm -rf tmp-extract Codex-x64.zip
 
       - name: 打补丁（AST-based）
-        run: |
-          export ASAR_CONTENT_DIR="$PWD/build-patch/_asar"
-          node scripts/patch-all.js mac-x64
+        run: node scripts/patch-all.js mac-x64
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
