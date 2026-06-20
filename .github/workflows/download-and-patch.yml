@@ -220,7 +220,7 @@ jobs:
           mkdir -p out
           hdiutil create -volname Codex \
             -srcfolder "build-patch/Codex.app" \
-            -ov -format UDZO "out/Codex-${VERSION}-macos-x64.dmg"
+            -ov -format ULFO "out/Codex-${VERSION}-macos-x64.dmg"
           echo "DMG: $(ls out/*.dmg)"
 
       - name: 上传 DMG
