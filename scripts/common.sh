@@ -9,6 +9,16 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Codex bundles a custom Electron based on Chromium 149 (roughly Electron 33-35 range)
 STANDARD_ELECTRON_VERSION="35.1.0"
 
+# Electron 的 Node.js ABI 版本（NODE_MODULE_VERSION）
+# 用于下载预编译原生模块时匹配 Electron 内置的 Node.js 版本
+# Electron 35.x → Node 22.x → ABI 133
+# 参考: https://github.com/nodejs/node/blob/main/doc/abi_version_registry.md
+ELECTRON_ABI=133
+
+# 从 Electron 版本推测 ABI（简单实用，覆盖主流版本）
+# 格式: 主版本号:ABI 空格分隔
+ELECTRON_ABI_MAP="31:127 33:133 34:133 35:133 36:133"
+
 # Log with timestamp
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 

@@ -1,0 +1,320 @@
+name: Download & Patch Codex x64
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制重新下载（即使已有缓存）'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: '指定版本号（如 26.616.32156，空=最新）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # ====================================================================
+  # 检测最新版本
+  # ====================================================================
+  detect:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      build: ${{ steps.parse.outputs.build }}
+      download_url: ${{ steps.parse.outputs.download_url }}
+      changed: ${{ steps.compare.outputs.changed }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 获取 AppCast
+        id: appcast
+        run: |
+          APPCAST=$(curl -fsSLk "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml" 2>/dev/null)
+          echo "$APPCAST" > /tmp/appcast.xml
+          echo "appcast fetched"
+
+      - name: 解析最新版本
+        id: parse
+        run: |
+          URL=$(grep -o 'https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-[^"]*\.zip' /tmp/appcast.xml | head -1)
+          VER=$(grep -o 'sparkle:shortVersionString>[^<]*' /tmp/appcast.xml | head -1 | sed 's/sparkle:shortVersionString>//')
+          BUILD=$(grep -o 'sparkle:version>[^<]*' /tmp/appcast.xml | head -1 | sed 's/sparkle:version>//')
+
+          # 如果用户指定了版本，使用指定的
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+            URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
+            echo "version=${VER}" >> $GITHUB_OUTPUT
+            echo "build=custom" >> $GITHUB_OUTPUT
+            echo "download_url=${URL}" >> $GITHUB_OUTPUT
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Using specified version: ${VER}"
+            exit 0
+          fi
+
+          echo "version=${VER}" >> $GITHUB_OUTPUT
+          echo "build=${BUILD}" >> $GITHUB_OUTPUT
+          echo "download_url=${URL}" >> $GITHUB_OUTPUT
+
+          echo "Latest: v${VER} (build ${BUILD})"
+
+      - name: 对比缓存版本
+        id: compare
+        run: |
+          CURRENT="${{ steps.parse.outputs.version }}"
+          CHANGED="true"
+
+          if [ -f .codex-x64-version ]; then
+            CACHED=$(cat .codex-x64-version)
+            if [ "$CURRENT" = "$CACHED" ] && [ "${{ inputs.force }}" != "true" ]; then
+              CHANGED="false"
+            fi
+          fi
+
+          echo "changed=${CHANGED}" >> $GITHUB_OUTPUT
+          echo "Current: ${CURRENT}, Cached: ${CACHED:-none}, Changed: ${CHANGED}"
+
+          if [ "$CHANGED" = "true" ]; then
+            echo "${CURRENT}" > .codex-x64-version
+            git config user.name "codex-bot"
+            git config user.email "bot@openai.com"
+            git add .codex-x64-version
+            git commit -m "chore: update x64 version to ${CURRENT}" || true
+            git push || true
+          fi
+
+  # ====================================================================
+  # macOS x64: 下载官方 zip → 补丁 → 打包 → 发布
+  # ====================================================================
+  build-macos-x64:
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install asar
+        run: npm install -g @electron/asar
+
+      - name: 下载官方 x64 包
+        run: |
+          URL="${{ needs.detect.outputs.download_url }}"
+          echo "Downloading: $URL"
+          curl -fSLk -C - --connect-timeout 30 --max-time 1800 --retry 3 \
+            "$URL" -o "Codex-x64.zip"
+          echo "Downloaded: $(du -h Codex-x64.zip | cut -f1)"
+
+      - name: 验证 ZIP
+        run: |
+          unzip -t "Codex-x64.zip" && echo "✅ Zip valid" || { echo "❌ Zip corrupted"; exit 1; }
+
+      - name: 解压
+        run: |
+          unzip -q "Codex-x64.zip" -d "build-x64"
+          APP_PATH="$(find "$PWD/build-x64" -maxdepth 2 -name "Codex.app" -type d | head -1)"
+          echo "APP_PATH=${APP_PATH}" >> $GITHUB_ENV
+          echo "Extracted: ${APP_PATH}"
+
+      - name: 提取 app.asar
+        run: |
+          ASAR_PATH="${{ env.APP_PATH }}/Contents/Resources/app.asar"
+          ASAR_DIR="${{ github.workspace }}/_asar"
+          mkdir -p "$ASAR_DIR"
+          npx asar extract "$ASAR_PATH" "$ASAR_DIR"
+          echo "ASAR_DIR=${ASAR_DIR}" >> $GITHUB_ENV
+          echo "Extracted _asar/ ($(find "$ASAR_DIR" -type f | wc -l) files)"
+
+      - name: 补丁 app.asar
+        env:
+          ASAR_CONTENT_DIR: ${{ github.workspace }}/_asar
+        run: |
+          for patch in scripts/patches/*.sh; do
+            [ -f "$patch" ] || continue
+            name=$(basename "$patch" .sh)
+            echo "== Running: $name =="
+            bash "$patch" 2>&1 | sed 's/^/  /'
+          done
+
+      - name: 重新打包 app.asar
+        run: |
+          ASAR_PATH="${{ env.APP_PATH }}/Contents/Resources/app.asar"
+          npx asar pack "${{ env.ASAR_DIR }}" "$ASAR_PATH"
+          echo "✅ app.asar repacked ($(du -h "$ASAR_PATH" | cut -f1))"
+
+      - name: Ad-hoc 签名
+        run: |
+          codesign --remove-signature "${{ env.APP_PATH }}" 2>/dev/null || true
+          xattr -rd com.apple.quarantine "${{ env.APP_PATH }}" 2>/dev/null || true
+          if codesign --sign - --force --deep "${{ env.APP_PATH }}" 2>&1; then
+            echo "✅ Ad-hoc signed"
+          else
+            echo "⚠️  Signing issues"
+          fi
+
+      - name: 创建 DMG
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          mkdir -p packages/macos-x64
+          hdiutil create -volname "Codex" \
+            -srcfolder "${{ env.APP_PATH }}" \
+            -ov -format UDZO \
+            "packages/macos-x64/Codex-${VERSION}-macos-x64.dmg"
+          echo "✅ DMG created"
+
+      - name: 上传 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-macos-x64-${{ needs.detect.outputs.version }}
+          path: packages/macos-x64/Codex-*.dmg
+          retention-days: 90
+
+  # ====================================================================
+  # Linux: 从 DMG 提取 app.asar → 补丁 → 用标准 Electron 打包
+  # ====================================================================
+  build-linux:
+    needs: detect
+    if: needs.detect.outputs.changed == 'true'
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full dmg2img fuse libfuse-dev cmake build-essential
+          sudo modprobe fuse || true
+          # apfs-fuse
+          git clone --depth 1 https://github.com/eafer/apfs-fuse.git /tmp/apfs-fuse
+          cd /tmp/apfs-fuse && mkdir build && cd build
+          cmake .. && make -j$(nproc) && sudo make install
+          cd /tmp && rm -rf /tmp/apfs-fuse
+
+      - name: Install asar
+        run: npm install -g @electron/asar
+
+      - name: 下载运行时的缓存
+        id: cache-runtime
+        uses: actions/cache@v4
+        with:
+          path: packages/linux-${{ matrix.arch }}
+          key: linux-runtime-${{ matrix.arch }}-${{ hashFiles('scripts/download-runtime.sh', 'scripts/common.sh') }}
+
+      - name: 下载运行时
+        if: steps.cache-runtime.outputs.cache-hit != 'true'
+        run: |
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            ./scripts/download-runtime.sh --platform linux --arch x64 --output packages/linux-amd64
+          else
+            ./scripts/download-runtime.sh --platform linux --arch arm64 --output packages/linux-arm64
+          fi
+
+      - name: 下载 Codex.dmg
+        run: |
+          curl -fSLk --connect-timeout 30 --max-time 600 --retry 3 \
+            "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg" \
+            -o Codex.dmg
+          echo "Downloaded: $(du -h Codex.dmg | cut -f1)"
+
+      - name: 提取 Codex.app（Linux 上用 apfs-fuse）
+        run: |
+          ./scripts/extract.sh --dmg Codex.dmg --output-dir build/extracted
+          ls -la build/extracted/Codex.app
+
+      - name: 提取并补丁 app.asar
+        run: |
+          ASAR_PATH="build/extracted/Codex.app/Contents/Resources/app.asar"
+          ASAR_DIR="_asar"
+          mkdir -p "$ASAR_DIR"
+          npx asar extract "$ASAR_PATH" "$ASAR_DIR"
+
+          # 运行补丁
+          export ASAR_CONTENT_DIR="$PWD/$ASAR_DIR"
+          for patch in scripts/patches/*.sh; do
+            [ -f "$patch" ] || continue
+            name=$(basename "$patch" .sh)
+            echo "== Running: $name =="
+            bash "$patch" 2>&1 | sed 's/^/  /'
+          done
+
+          # 重新打包
+          npx asar pack "$ASAR_DIR" "$ASAR_PATH"
+          echo "✅ app.asar repacked ($(du -h "$ASAR_PATH" | cut -f1))"
+
+      - name: 打包 Linux
+        run: |
+          VERSION="${{ needs.detect.outputs.version }}"
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            ./scripts/pack-linux-amd64.sh --app "$PWD/build/extracted/Codex.app"
+          else
+            ./scripts/pack-linux-arm64.sh --app "$PWD/build/extracted/Codex.app"
+          fi
+
+      - name: 上传 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex-linux-${{ matrix.arch }}-${{ needs.detect.outputs.version }}
+          path: packages/linux-*/Codex-*
+          retention-days: 90
+
+  # ====================================================================
+  # 发布 Release
+  # ====================================================================
+  release:
+    needs: [detect, build-macos-x64, build-linux]
+    if: needs.detect.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载所有 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 列出产物
+        run: |
+          find artifacts -type f | sort
+          echo "---"
+          du -sh artifacts/*/
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.detect.outputs.version }}-x64
+          name: "Codex ${{ needs.detect.outputs.version }} (x64)"
+          body: |
+            ## Codex ${{ needs.detect.outputs.version }}
+
+            **来源**: 官方 Codex-darwin-x64 appcast
+
+            **补丁**:
+            - ✅ i18n 强制启用（中文设置可用）
+            - ✅ DevTools 启用
+            - ✅ 自动更新禁用
+            - ✅ AppSunset 强制更新禁用
+            - ✅ Ad-hoc 已签名
+
+            **平台**:
+            | 平台 | 文件 |
+            |------|------|
+            | macOS Intel (x64) | `.dmg` |
+            | Linux amd64 | `.tar.gz` + `.deb` |
+            | Linux arm64 | `.tar.gz` + `.deb` |
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.tar.gz
+            artifacts/**/*.deb
+          draft: false
+          prerelease: false
