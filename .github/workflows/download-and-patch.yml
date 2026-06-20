@@ -226,8 +226,8 @@ jobs:
 
       - name: 签名（组件级→主包）
         run: |
-          xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
           # 先逐组件签名（--deep 在 macOS 14+ 对嵌套 framework 会报 ambiguous）
+          # 标准 Electron Framework 从 GitHub 下载时无签名，第一步给它签上
           for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
             [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
           done
