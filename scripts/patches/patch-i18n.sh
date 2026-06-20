@@ -27,9 +27,13 @@ filepath = sys.argv[1]
 with open(filepath, "r") as fp:
     code = fp.read()
 
-# 匹配: X.get("enable_i18n", ...) 或 X?.get("enable_i18n", ...)
+# 匹配:
+#   x.get("enable_i18n", ...)
+#   x?.get("enable_i18n", ...)
+#   ie("72216192")?.get("enable_i18n", ...)
+#   X.Y?.get("enable_i18n", ...)
 new_code = re.sub(
-    r"[a-zA-Z_]\w*(?:\?\.|\.)get\([\"']enable_i18n[\"'][^)]*\)",
+    r"[a-zA-Z_]\w*(?:\([^)]*\))?(?:\?\.|\.)get\([\"']enable_i18n[\"'][^)]*\)",
     "!0",
     code
 )
