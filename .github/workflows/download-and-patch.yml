@@ -224,21 +224,26 @@ jobs:
           plutil -replace CFBundleExecutable -string "Codex" "build-patch/Codex.app/Contents/Info.plist" 2>/dev/null || true
           echo "Framework replacement done"
 
-      - name: 签名（组件级→主包）
+      - name: 签名（递归子组件→主包）
         run: |
-          # 先逐组件签名（--deep 在 macOS 14+ 对嵌套 framework 会报 ambiguous）
-          # 标准 Electron Framework 从 GitHub 下载时无签名，第一步给它签上
+          # 1) 签名所有嵌套 Helper .app（排除 Codex.app 自身）
+          find "build-patch/Codex.app" -path "*/Codex.app" -prune -o -name "*.app" -depth -print 2>/dev/null |             while IFS= read -r helper; do
+              codesign --sign - --force "$helper" 2>/dev/null || true
+            done
+          # 2) 签名 Frameworks
           for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
             [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
           done
+          # 3) 签名 PlugIns
           for plugin in "build-patch/Codex.app/Contents/PlugIns/"*.plugin; do
             [ -d "$plugin" ] && codesign --sign - --force "$plugin" 2>/dev/null || true
           done
-          # 最后签主包（不带 --deep，组件已独立签过）
-          codesign --sign - --force --preserve-metadata=identifier,entitlements,flags,runtime \
-            "build-patch/Codex.app"
-          codesign -dvvv "build-patch/Codex.app" 2>&1 | \
-            grep -E "Authority=|Signed Time|Sealed Resources" || true
+          # 4) 最后签主包
+          if ! codesign --sign - --force --preserve-metadata=identifier,entitlements,flags,runtime "build-patch/Codex.app" 2>/dev/null; then
+            codesign --sign - --force "build-patch/Codex.app"
+          fi
+          echo "--- Verification ---"
+          codesign -dvvv "build-patch/Codex.app" 2>&1 | grep -E "Authority=|Signed Time|Sealed Resources" || true
           echo "Signed OK"
 
       - name: 创建 DMG
