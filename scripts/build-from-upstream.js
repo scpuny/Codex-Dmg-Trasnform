@@ -3,10 +3,7 @@
  * build-from-upstream.js — Patch upstream Codex and repackage
  *
  * Takes the upstream app from cache, patches ASAR, strips arm64,
- * signs, creates compressed DMG (sparse+ULFO) + ZIP.
- *
- * Usage:
- *   node scripts/build-from-upstream.js --platform mac-x64
+ * signs, creates DMG (ULFO) + ZIP.
  */
 const fs = require("fs");
 const path = require("path");
@@ -59,7 +56,7 @@ function buildMac() {
   const plist = path.join(outApp, "Contents", "Info.plist");
   if (fs.existsSync(plist)) updateAsarIntegrity(path.join(outApp, "Contents", "Resources", "app.asar"), plist);
 
-  // 4. Strip arm64 slice + debug symbols (reduce ~100MB)
+  // 4. Strip arm64 slice + debug symbols
   const bin = path.join(outApp, "Contents", "MacOS", "Codex");
   try {
     const archs = execSync(`lipo -archs "${bin}"`, { encoding: "utf-8" }).trim();
@@ -88,34 +85,18 @@ function buildMac() {
   }
   try { const v = execSync(`codesign -dvvv "${outApp}" 2>&1`, { encoding: "utf-8" }); for (const l of v.split("\n").filter(x => /^(Authority|Signed Time|Sealed Resources|Format|Identifier)/i.test(x))) console.log("   " + l.trim()); } catch {}
 
-  // 7. DMG: sparse image → zero-fill → compact → ULFO
+  // 7. DMG (ULFO, 3 次重试防 Resource busy)
   const ver = getVersion(asarDir);
   const dmgPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.dmg`);
-  const sparseTmp = path.join(OUT_DIR, "tmp-build-sparse.sparseimage");
-  console.log("   [dmg] sparse+ULFO build...");
+  console.log("   [dmg] creating ULFO...");
   run(`hdiutil detach -quiet "/Volumes/Codex"`);
-  if (fs.existsSync(sparseTmp)) fs.unlinkSync(sparseTmp);
-  let dmgOk = false;
   for (let i = 1; i <= 3; i++) {
     try {
-      const duOut = execSync(`du -s "${outAppDir}"`, { encoding: "utf8" }).trim();
-      const appMb = Math.floor((parseInt(duOut.split(/\s+/)[0], 10) * 512) / 1048576) + 50;
-      execSync(`hdiutil create -type SPARSE -fs HFS+J -volname Codex -size ${appMb}M "${sparseTmp}"`, { stdio: "pipe" });
-      const mountRaw = execSync(`hdiutil attach "${sparseTmp}"`, { encoding: "utf8" });
-      const mp = mountRaw.split("\n").find(l => l.startsWith("/Volumes/")).split(/\s+/)[0];
-      execSync(`ditto "${outAppDir}/Codex.app" "${mp}/Codex.app"`, { stdio: "pipe" });
-      run(`dd if=/dev/zero of="${mp}/.zero-fill-tmp" bs=1m`);
-      run(`rm -f "${mp}/.zero-fill-tmp"`);
-      run(`rm -rf "${mp}/.fseventsd" "${mp}/.Spotlight-V100"`);
-      execSync(`hdiutil detach "${mp}"`, { stdio: "pipe" });
-      execSync(`hdiutil compact "${sparseTmp}"`, { stdio: "pipe" });
-      execSync(`hdiutil convert "${sparseTmp}" -format ULFO -ov -o "${dmgPath}"`, { stdio: "pipe" });
-      dmgOk = true; break;
+      execSync(`hdiutil create -volname Codex -srcfolder "${outAppDir}" -ov -format ULFO "${dmgPath}"`, { stdio: "pipe" });
+      break;
     } catch (e) {
-      console.log(`   [!] attempt ${i}/3: ${e.message.trim().split("\n")[0]}`);
+      console.log(`   [!] dmg attempt ${i}/3: ${e.message.trim().split("\n")[0]}`);
       if (i < 3) { run(`hdiutil detach -quiet "/Volumes/Codex"`); execSync(`sleep ${i * 2}`, { stdio: "pipe" }); }
-    } finally {
-      if (fs.existsSync(sparseTmp)) try { fs.unlinkSync(sparseTmp); } catch {}
     }
   }
   if (fs.existsSync(dmgPath)) console.log("   [ok] DMG:", (fs.statSync(dmgPath).size / 1048576).toFixed(1), "MB");
