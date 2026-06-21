@@ -381,18 +381,36 @@ function buildMac(platform) {
   console.log("   [codesign] signing (bottom-up)...");
   signComponents(outApp);
 
-  // 9. Create DMG (UDZO = bzip2 压缩)
+  // 9. Create DMG (UDZO = bzip2 压缩, 遇 Resource busy 自动重试)
   const version = getVersion(asarDir);
   const dmgName = `Codex-${version}-macos-x64.dmg`;
   const dmgPath = path.join(OUT_DIR, dmgName);
   console.log(`   [dmg] ${dmgName}`);
-  execSync(
-    `hdiutil create -volname Codex -srcfolder "${outAppDir}" -ov -format UDZO "${dmgPath}"`,
-    { stdio: "pipe" }
-  );
+  // CI runner 上 hdiutil 偶发 Resource busy, 先 detach 再重试
+  try { execSync(`hdiutil detach -quiet "/Volumes/Codex" 2>/dev/null`, { stdio: "pipe" }); } catch {}
+  let dmgOk = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      execSync(
+        `hdiutil create -volname Codex -srcfolder "${outAppDir}" -ov -format UDZO "${dmgPath}"`,
+        { stdio: "pipe" }
+      );
+      dmgOk = true;
+      break;
+    } catch (e) {
+      console.log(`   [!] dmg attempt ${attempt}/3: ${e.message.trim().split("\n")[0]}`);
+      if (attempt < 3) {
+        try { execSync(`hdiutil detach -quiet "/Volumes/Codex" 2>/dev/null`, { stdio: "pipe" }); } catch {}
+        execSync(`sleep $((attempt * 2))`, { stdio: "pipe" });
+      }
+    }
+  }
+  if (!dmgOk) {
+    console.error("[x] DMG creation failed after 3 attempts");
+    process.exit(1);
+  }
   const dmgSizeMB = (fs.statSync(dmgPath).size / 1048576).toFixed(1);
   console.log(`   [ok] ${dmgPath} (${dmgSizeMB} MB)`);
-
   // 10. Create ZIP (最大压缩, 保留符号链接)
   const zipName = `Codex-${version}-macos-x64.zip`;
   const zipPath = path.join(OUT_DIR, zipName);
