@@ -2,9 +2,8 @@
 /**
  * build-from-upstream.js — Patch upstream Codex and repackage
  *
- * Takes the upstream app from cache, patches ASAR, re-signs,
- * creates DMG + ZIP.  All complexity removed — matching the
- * reference project's simple approach.
+ * Takes the upstream app from cache, patches ASAR, strips arm64,
+ * signs, creates compressed DMG (sparse+ULFO) + ZIP.
  *
  * Usage:
  *   node scripts/build-from-upstream.js --platform mac-x64
@@ -17,175 +16,124 @@ const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SRC_DIR = path.join(PROJECT_ROOT, "src");
 const OUT_DIR = path.join(PROJECT_ROOT, "out");
 
-function clearDir(dir) {
-  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true });
-  fs.mkdirSync(dir, { recursive: true });
-}
+function clearDir(d) { if (fs.existsSync(d)) fs.rmSync(d, { recursive: true }); fs.mkdirSync(d, { recursive: true }); }
 
 function getVersion(asarDir) {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(asarDir, "package.json"), "utf-8"));
-    return pkg.version || "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
-// ─── ASAR integrity ─────────────────────────────────────────────
-
-function computeAsarHeaderHash(asarPath) {
-  const crypto = require("crypto");
-  const buf = fs.readFileSync(asarPath);
-  const headerSize = buf.readUInt32LE(12);
-  return crypto.createHash("sha256").update(buf.slice(16, 16 + headerSize)).digest("hex");
+  try { return JSON.parse(fs.readFileSync(path.join(asarDir, "package.json"), "utf-8")).version || "unknown"; }
+  catch { return "unknown"; }
 }
 
 function updateAsarIntegrity(asarPath, infoPlistPath) {
-  const hash = computeAsarHeaderHash(asarPath);
+  const crypto = require("crypto");
+  const buf = fs.readFileSync(asarPath);
+  const hash = crypto.createHash("sha256").update(buf.slice(16, 16 + buf.readUInt32LE(12))).digest("hex");
   try {
-    execSync(
-      `plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.hash -string "${hash}" "${infoPlistPath}"`,
-      { stdio: "pipe" }
-    );
-    execSync(
-      `plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.algorithm -string SHA256 "${infoPlistPath}"`,
-      { stdio: "pipe" }
-    );
-    console.log(`   [integrity] hash updated: ${hash.slice(0, 16)}...`);
-  } catch (e) {
-    console.log(`   [!] integrity update failed: ${e.message.trim().split("\n")[0]}`);
-  }
+    execSync(`plutil -replace ElectronAsarIntegrity.Resources/app\\.asar.hash -string "${hash}" "${infoPlistPath}"`, { stdio: "pipe" });
+    execSync(`plutil -replace ElectronAsarIntegrity.Resources/app\\.asar.algorithm -string SHA256 "${infoPlistPath}"`, { stdio: "pipe" });
+    console.log("   [integrity] hash:", hash.slice(0, 16) + "...");
+  } catch {}
 }
 
-// ─── macOS build ────────────────────────────────────────────────
-
 function buildMac() {
-  const platformDir = path.join(SRC_DIR, "mac-x64");
-  const asarDir = path.join(platformDir, "_asar");
-  if (!fs.existsSync(asarDir)) {
-    console.error("[x] mac-x64/_asar/ not found. Run sync-upstream first.");
-    process.exit(1);
-  }
+  const asarDir = path.join(SRC_DIR, "mac-x64", "_asar");
+  if (!fs.existsSync(asarDir)) { console.error("[x] _asar/ not found"); process.exit(1); }
 
   // 1. Find .app in temp cache
-  const extractDir = path.join(require("os").tmpdir(), "codex-sync", "x64-extract");
-  const findApp = (d) => {
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (e.name === "Codex.app" && e.isDirectory()) return path.join(d, e.name);
-      if (e.isDirectory()) { const r = findApp(path.join(d, e.name)); if (r) return r; }
-    }
-    return null;
-  };
-  const appPath = findApp(extractDir);
-  if (!appPath) {
-    console.error("[x] Codex.app not found in cache. Run sync-upstream first.");
-    process.exit(1);
-  }
-  console.log(`   [source] ${appPath}`);
+  const ed = path.join(require("os").tmpdir(), "codex-sync", "x64-extract");
+  const findApp = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.name === "Codex.app" && e.isDirectory()) return path.join(d, e.name); if (e.isDirectory()) { const r = findApp(path.join(d, e.name)); if (r) return r; } } return null; };
+  const appPath = findApp(ed);
+  if (!appPath) { console.error("[x] Codex.app not found"); process.exit(1); }
+  console.log("   [source]", appPath);
 
-  // 2. ditto copy (preserves symlinks + resource forks + _CodeSignature/PkgInfo etc.)
   const outAppDir = path.join(OUT_DIR, "mac-x64");
   clearDir(outAppDir);
   const outApp = path.join(outAppDir, "Codex.app");
-  console.log("   [copy] Codex.app -> out/");
+  console.log("   [ditto] copying .app");
   execSync(`ditto "${appPath}" "${outApp}"`);
 
-  const resourcesDir = path.join(outApp, "Contents", "Resources");
-  const infoPlist = path.join(outApp, "Contents", "Info.plist");
+  // 2. Repack ASAR
+  console.log("   [asar] pack");
+  execSync(`npx asar pack "${asarDir}" "${path.join(outApp, "Contents", "Resources", "app.asar")}"`);
 
-  // 3. Repack patched ASAR
-  console.log("   [asar pack] _asar/ -> app.asar");
-  execSync(`npx asar pack "${asarDir}" "${path.join(resourcesDir, "app.asar")}"`);
+  // 3. Update integrity
+  const plist = path.join(outApp, "Contents", "Info.plist");
+  if (fs.existsSync(plist)) updateAsarIntegrity(path.join(outApp, "Contents", "Resources", "app.asar"), plist);
 
-  // 4. Update ASAR integrity hash
-  if (fs.existsSync(infoPlist)) {
-    updateAsarIntegrity(path.join(resourcesDir, "app.asar"), infoPlist);
-  }
-
-  // 5. Strip original signature + quarantine
-  const doMaybe = (cmd) => { try { execSync(cmd, { stdio: "pipe" }); } catch {} };
-  doMaybe(`codesign --remove-signature "${outApp}"`);
-  doMaybe(`xattr -rd com.apple.quarantine "${outApp}"`);
-
-  // 6. Ad-hoc sign (simple --deep, like reference project)
-  console.log("   [codesign] ad-hoc signing");
+  // 4. Strip arm64 slice + debug symbols (reduce ~100MB)
+  const bin = path.join(outApp, "Contents", "MacOS", "Codex");
   try {
-    execSync(`codesign --sign - --force --deep "${outApp}"`, { stdio: "pipe" });
-    console.log("   [codesign] OK");
-  } catch (e) {
-    console.log(`   [!] codesign --deep failed: ${e.message.trim().split("\n")[0]}`);
-    console.log("   [codesign] trying component-level fallback...");
-    // Fallback: sign helpers → frameworks → plugins → main
-    // macOS 14+ sometimes chokes on --deep with nested frameworks
-    try {
-      execSync(`find "${outApp}" -path "*/Codex.app" -prune -o -name "*.app" -depth -print | ` +
-        `while IFS= read -r h; do codesign --sign - --force "$h"; done 2>/dev/null`, { stdio: "pipe" });
-    } catch {}
-    for (const dir of ["Frameworks", "PlugIns"]) {
-      const d = path.join(outApp, "Contents", dir);
-      if (fs.existsSync(d)) {
-        for (const item of fs.readdirSync(d)) {
-          doMaybe(`codesign --sign - --force "${path.join(d, item)}"`);
-        }
-      }
+    const archs = execSync(`lipo -archs "${bin}"`, { encoding: "utf-8" }).trim();
+    if (archs.includes("arm64")) {
+      console.log("   [lipo] remove arm64 (was:", archs + ")");
+      execSync(`lipo "${bin}" -remove arm64 -output "${bin}.thin"`, { stdio: "pipe" });
+      fs.renameSync(bin + ".thin", bin);
+      fs.chmodSync(bin, 0o755);
     }
-    doMaybe(`codesign --sign - --force "${outApp}"`);
-  }
-
-  // Verify
-  try {
-    const v = execSync(`codesign -dvvv "${outApp}" 2>&1`, { encoding: "utf-8" });
-    const lines = v.split("\n").filter(l => /^(Authority|Signed Time|Sealed Resources|Format|Identifier)/i.test(l));
-    for (const l of lines) console.log(`   ${l.trim()}`);
+    try { execSync(`strip -x "${bin}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
   } catch {}
 
-  // 7. Create DMG
-  const version = getVersion(asarDir);
-  const dmgPath = path.join(OUT_DIR, `Codex-${version}-macos-x64.dmg`);
-  console.log("   [dmg] creating...");
-  doMaybe(`hdiutil detach -quiet "/Volumes/Codex"`);
+  // 5. Remove signature + quarantine
+  const run = (c) => { try { execSync(c, { stdio: "pipe" }); } catch {} };
+  run(`codesign --remove-signature "${outApp}"`);
+  run(`xattr -rd com.apple.quarantine "${outApp}"`);
+
+  // 6. Ad-hoc sign
+  console.log("   [codesign] signing");
+  try { execSync(`codesign --sign - --force --deep "${outApp}"`, { stdio: "pipe" }); console.log("   [codesign] OK"); }
+  catch (e) {
+    console.log("   [!] --deep failed, component fallback...");
+    try { execSync(`find "${outApp}" -path "*/Codex.app" -prune -o -name "*.app" -depth -print0 | xargs -0 codesign --sign - --force 2>/dev/null`, { stdio: "pipe" }); } catch {}
+    for (const d of ["Frameworks", "PlugIns"]) { const dd = path.join(outApp, "Contents", d); if (fs.existsSync(dd)) for (const i of fs.readdirSync(dd)) run(`codesign --sign - --force "${path.join(dd, i)}"`); }
+    run(`codesign --sign - --force "${outApp}"`);
+  }
+  try { const v = execSync(`codesign -dvvv "${outApp}" 2>&1`, { encoding: "utf-8" }); for (const l of v.split("\n").filter(x => /^(Authority|Signed Time|Sealed Resources|Format|Identifier)/i.test(x))) console.log("   " + l.trim()); } catch {}
+
+  // 7. DMG: sparse image → zero-fill → compact → ULFO
+  const ver = getVersion(asarDir);
+  const dmgPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.dmg`);
+  const sparseTmp = path.join(OUT_DIR, "tmp-build-sparse.sparseimage");
+  console.log("   [dmg] sparse+ULFO build...");
+  run(`hdiutil detach -quiet "/Volumes/Codex"`);
+  if (fs.existsSync(sparseTmp)) fs.unlinkSync(sparseTmp);
+  let dmgOk = false;
   for (let i = 1; i <= 3; i++) {
     try {
-      execSync(`hdiutil create -volname Codex -srcfolder "${outAppDir}" -ov -format UDZO "${dmgPath}"`,
-        { stdio: "pipe" });
-      break;
+      const duOut = execSync(`du -s "${outAppDir}"`, { encoding: "utf8" }).trim();
+      const appMb = Math.floor((parseInt(duOut.split(/\s+/)[0], 10) * 512) / 1048576) + 50;
+      execSync(`hdiutil create -type SPARSE -fs HFS+J -volname Codex -size ${appMb}M "${sparseTmp}"`, { stdio: "pipe" });
+      const mountRaw = execSync(`hdiutil attach "${sparseTmp}"`, { encoding: "utf8" });
+      const mp = mountRaw.split("\n").find(l => l.startsWith("/Volumes/")).split(/\s+/)[0];
+      execSync(`ditto "${outAppDir}/Codex.app" "${mp}/Codex.app"`, { stdio: "pipe" });
+      run(`dd if=/dev/zero of="${mp}/.zero-fill-tmp" bs=1m`);
+      run(`rm -f "${mp}/.zero-fill-tmp"`);
+      run(`rm -rf "${mp}/.fseventsd" "${mp}/.Spotlight-V100"`);
+      execSync(`hdiutil detach "${mp}"`, { stdio: "pipe" });
+      execSync(`hdiutil compact "${sparseTmp}"`, { stdio: "pipe" });
+      execSync(`hdiutil convert "${sparseTmp}" -format ULFO -ov -o "${dmgPath}"`, { stdio: "pipe" });
+      dmgOk = true; break;
     } catch (e) {
-      console.log(`   [!] dmg attempt ${i}/3 failed, retrying...`);
-      if (i < 3) {
-        doMaybe(`hdiutil detach -quiet "/Volumes/Codex"`);
-        execSync(`sleep ${i * 2}`, { stdio: "pipe" });
-      } else {
-        console.error(`   [x] DMG failed: ${e.message.trim().split("\n")[0]}`);
-        // Non-fatal — ZIP still available
-      }
+      console.log(`   [!] attempt ${i}/3: ${e.message.trim().split("\n")[0]}`);
+      if (i < 3) { run(`hdiutil detach -quiet "/Volumes/Codex"`); execSync(`sleep ${i * 2}`, { stdio: "pipe" }); }
+    } finally {
+      if (fs.existsSync(sparseTmp)) try { fs.unlinkSync(sparseTmp); } catch {}
     }
   }
-  if (fs.existsSync(dmgPath)) {
-    console.log(`   [ok] DMG: ${(fs.statSync(dmgPath).size / 1048576).toFixed(1)} MB`);
-  }
+  if (fs.existsSync(dmgPath)) console.log("   [ok] DMG:", (fs.statSync(dmgPath).size / 1048576).toFixed(1), "MB");
 
-  // 8. Create ZIP
-  const zipPath = path.join(OUT_DIR, `Codex-${version}-macos-x64.zip`);
+  // 8. ZIP (redirect stdout to avoid ENOBUFS)
+  const zipPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.zip`);
   console.log("   [zip] creating...");
-  execSync(`cd "${outAppDir}" && zip -r -9 --symlinks -X "${zipPath}" "Codex.app"`, { stdio: "pipe" });
-  console.log(`   [ok] ZIP: ${(fs.statSync(zipPath).size / 1048576).toFixed(1)} MB`);
+  execSync(`cd "${outAppDir}" && zip -r -9 --symlinks -X "${zipPath}" "Codex.app" >/dev/null 2>&1`, { stdio: "pipe" });
+  console.log("   [ok] ZIP:", (fs.statSync(zipPath).size / 1048576).toFixed(1), "MB");
 }
-
-// ─── Main ───────────────────────────────────────────────────────
 
 function main() {
   const args = process.argv.slice(2);
-  const platIdx = args.indexOf("--platform");
-  const platform = platIdx !== -1 ? args[platIdx + 1] : null;
-
-  if (!platform || !["mac-x64"].includes(platform)) {
-    console.error("[x] Usage: build-from-upstream.js --platform <mac-x64>");
-    process.exit(1);
-  }
-
-  console.log(`\n== Build from upstream: ${platform} ==\n`);
+  const i = args.indexOf("--platform");
+  const p = i !== -1 ? args[i + 1] : null;
+  if (!p || p !== "mac-x64") { console.error("Usage: build-from-upstream.js --platform mac-x64"); process.exit(1); }
+  console.log("\n== Build from upstream:", p, "==\n");
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  if (platform.startsWith("mac")) buildMac();
+  buildMac();
 }
-
 main();
