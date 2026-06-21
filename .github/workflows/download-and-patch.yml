@@ -46,15 +46,15 @@ jobs:
       - name: 解析最新版本
         id: parse
         run: |
-          # 格式1: 元素格式 sparkle:shortVersionString>VALUE<
-          VER=$(grep -oE 'sparkle:shortVersionString>[^<]*' /tmp/appcast.xml |             head -1 | sed 's/sparkle:shortVersionString>//')
-          # 格式2: 属性格式 sparkle:shortVersionString="VALUE"
+          VER=$(grep -oE 'sparkle:shortVersionString>[^<]*' /tmp/appcast.xml | \
+            head -1 | sed 's/sparkle:shortVersionString>//')
           if [ -z "$VER" ]; then
-            VER=$(grep -oE 'sparkle:shortVersionString="[^"]*"' /tmp/appcast.xml |               head -1 | sed 's/sparkle:shortVersionString="//;s/"//')
+            VER=$(grep -oE 'sparkle:shortVersionString="[^"]*"' /tmp/appcast.xml | \
+              head -1 | sed 's/sparkle:shortVersionString="//;s/"//')
           fi
-          # fallback: 从 sparkle:version 属性拿
           if [ -z "$VER" ]; then
-            VER=$(grep -oE 'sparkle:version="[^"]*"' /tmp/appcast.xml |               head -1 | sed 's/sparkle:version="//;s/"//')
+            VER=$(grep -oE 'sparkle:version="[^"]*"' /tmp/appcast.xml | \
+              head -1 | sed 's/sparkle:version="//;s/"//')
           fi
           VERSION_INPUT="${{ inputs.version }}"
           [ -n "$VERSION_INPUT" ] && VER="$VERSION_INPUT"
@@ -82,77 +82,14 @@ jobs:
           fi
 
   # ====================================================================
-  # Job 2: prepare — 下载 → 提取 → 补丁 → 上传(Ubuntu)
-  # ====================================================================
-  prepare:
-    needs: detect
-    if: needs.detect.outputs.changed == 'true'
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install npm deps
-        run: npm ci
-
-      - name: 下载官方 x64 ZIP
-        run: |
-          VER="${{ needs.detect.outputs.version }}"
-          URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
-          curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 "$URL" -o "Codex-x64.zip"
-          echo "Downloaded: $(du -h Codex-x64.zip | cut -f1)"
-
-      - name: 提取 Codex.app + ASAR
-        run: |
-          7z x -y "Codex-x64.zip" -o"tmp-extract" 2>/dev/null
-          APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
-          [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
-
-          # .app 完整结构(macOS 签名+DMG 需要)
-          mkdir -p build-patch/Codex.app/Contents
-          for d in Frameworks MacOS PlugIns Resources; do
-            [ -d "$APP_PATH/Contents/$d" ] && \
-              cp -a "$APP_PATH/Contents/$d" "build-patch/Codex.app/Contents/$d"
-          done
-          cp "$APP_PATH/Contents/Info.plist" "build-patch/Codex.app/Contents/Info.plist"
-
-          # _asar 提取(补丁目标 + 重打包源)
-          mkdir -p src/mac-x64
-          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
-          echo "_asar: $(find src/mac-x64/_asar -type f | wc -l) files"
-          cp -a src/mac-x64/_asar build-patch/_asar
-
-          # app.asar.unpacked
-          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
-            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "build-patch/"
-          fi
-
-          rm -rf tmp-extract Codex-x64.zip
-
-      - name: 打补丁(AST-based)
-        run: node scripts/patch-all.js mac-x64
-
-      - name: 上传构建产物(_asar + .app 结构)
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-patch-${{ needs.detect.outputs.version }}
-          path: build-patch/
-          retention-days: 7
-
-  # ====================================================================
-  # Job 3: macOS Intel (x86_64) — DMG
-  # 轻量收尾:重打包 ASAR → integrity → 签名 → DMG
+  # Job 2: macOS Intel (x86_64) — 下载 → 提取 → 补丁 → 签名 → DMG
+  # 完整流程在 macOS runner 上执行,使用 ditto 保留符号链接和资源分支
   # ====================================================================
   build-macos-x64:
-    needs: [detect, prepare]
+    needs: detect
     if: needs.detect.outputs.changed == 'true'
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -164,115 +101,25 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: 下载 prepare 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: build-patch-${{ needs.detect.outputs.version }}
-          path: build-patch/
+      - name: Install 7zip
+        run: brew install --quiet sevenzip
 
-      - name: 重建 app.asar
+      - name: 同步上游 (下载 + ditto 解压 + 复制到 src/)
+        run: node scripts/sync-upstream.js --force --skip-arm64
+
+      - name: 打补丁 (AST-based)
+        run: node scripts/patch-all.js mac-x64
+
+      - name: 构建 (asar repack → lipo → strip → cleanup → sign → DMG → ZIP)
+        run: node scripts/build-from-upstream.js --platform mac-x64
+
+      - name: 列出产物
         run: |
-          npx asar pack "build-patch/_asar" \
-            "build-patch/Codex.app/Contents/Resources/app.asar"
-          echo "Repacked: $(ls -lh build-patch/Codex.app/Contents/Resources/app.asar)"
-
-      - name: 裁剪双架构二进制(移除 arm64 切片) + ARM runner 安全裁剪 x64 二进制
-        run: |
-          # 核心:在 ARM 环境用 -extract x86_64 而不是 -remove arm64
-          # -extract 完整提取纯净单架构二进制,-remove 会残留无效段
-
-          # 1) 裁剪主二进制 MacOS/Codex
-          BIN="build-patch/Codex.app/Contents/MacOS/Codex"
-          echo "=== 裁剪前: $(lipo -archs \"$BIN\" 2>/dev/null || echo unknown)"
-          if lipo -archs "$BIN" 2>/dev/null | grep -q arm64; then
-            lipo "$BIN" -extract x86_64 -output "${BIN}.thin"
-            mv -f "${BIN}.thin" "$BIN"
-            chmod +x "$BIN"
-            echo "=== 裁剪后: $(lipo -archs \"$BIN\" 2>/dev/null || echo unknown)"
-          fi
-
-          # 2) 裁剪 Codex Framework.framework 主二进制
-          FW_BIN="build-patch/Codex.app/Contents/Frameworks/Codex Framework.framework/Versions/149.0.7827.115/Codex Framework"
-          if [ -f "$FW_BIN" ]; then
-            echo "Framework: $(lipo -archs \"$FW_BIN\" 2>/dev/null || echo unknown)"
-            if lipo -archs "$FW_BIN" 2>/dev/null | grep -q arm64; then
-              lipo "$FW_BIN" -extract x86_64 -output "${FW_BIN}.thin"
-              mv -f "${FW_BIN}.thin" "$FW_BIN"
-              echo "Framework sliced to x86_64 only"
-            fi
-          fi
-
-          # 3) strip 调试符号(官方内置步骤,再减几十MB)
-          strip -x "$BIN" 2>/dev/null || true
-          if [ -f "$FW_BIN" ]; then
-            strip -x "$FW_BIN" 2>/dev/null || true
-          fi
-          echo "=== Strip debug symbols done ==="
-      - name: 更新 ElectronAsarIntegrity
-        run: |
-          node -e '
-          const c = require("crypto"), f = require("fs");
-          const a = "build-patch/Codex.app/Contents/Resources/app.asar";
-          const p = "build-patch/Codex.app/Contents/Info.plist";
-          const b = f.readFileSync(a);
-          const hash = c.createHash("sha256")
-            .update(b.slice(16, 16 + b.readUInt32LE(12))).digest("hex");
-          const { execSync } = require("child_process");
-          execSync("plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.hash -string "
-            + hash + " " + p, { stdio: "pipe" });
-          execSync("plutil -replace ElectronAsarIntegrity.Resources/app\\\\.asar.algorithm -string SHA256 "
-            + p, { stdio: "pipe" });
-          console.log("Integrity:", hash.slice(0, 16) + "...");
-          '
-
-      - name: 签名(参考项目方式)
-        run: |
-          # 参考项目:先移除原签名(失败则跳过),再 ad-hoc 重签
-          codesign --remove-signature "build-patch/Codex.app" 2>/dev/null || true
-          xattr -rd com.apple.quarantine "build-patch/Codex.app" 2>/dev/null || true
-          if ! codesign --sign - --force --deep "build-patch/Codex.app" 2>/dev/null; then
-            # --deep 失败时退回到组件级签名
-            find "build-patch/Codex.app" -path "*/Codex.app" -prune -o -name "*.app" -depth -print 2>/dev/null |               while IFS= read -r helper; do codesign --sign - --force "$helper" 2>/dev/null || true; done
-            for fw in "build-patch/Codex.app/Contents/Frameworks/"*.framework; do
-              [ -d "$fw" ] && codesign --sign - --force "$fw" 2>/dev/null || true
-            done
-            codesign --sign - --force "build-patch/Codex.app"
-          fi
-          echo "--- Verification ---"
-          codesign -dvvv "build-patch/Codex.app" 2>&1 | grep -E "Authority=|Signed Time|Sealed Resources" || true
-          echo "Signed OK"
-
-
-      - name: 清理冗余 + 统一时间戳
-        run: |
-          # 清理无用文件
-          find "build-patch/Codex.app" -name ".DS_Store" -delete 2>/dev/null || true
-          find "build-patch/Codex.app" -name "*.map" -delete 2>/dev/null || true
-          find "build-patch/Codex.app" -iname "readme*" -delete 2>/dev/null || true
-          find "build-patch/Codex.app" -iname "license*" -delete 2>/dev/null || true
-          find "build-patch/Codex.app" -iname "NOTICE*" -delete 2>/dev/null || true
-
-          # 统一全部文件 mtime(复刻官方流水线连续压缩增益)
-          find "build-patch/Codex.app" -exec touch -t 202601010000 {} \; 2>/dev/null || true
-          echo "Cleanup + timestamp unified"
-      - name: 创建 DMG
-        run: |
-          VERSION="${{ needs.detect.outputs.version }}"
-          mkdir -p out
-          # DMG:直接挂载用(ULFO 压缩)
-          hdiutil create -volname Codex \
-            -srcfolder "build-patch/Codex.app" \
-            -ov -format ULFO "out/Codex-${VERSION}-macos-x64.dmg"
-          echo "DMG: $(ls -lh out/*.dmg)"
-
-      - name: 创建 ZIP(官方同规格,最大压缩)
-        run: |
-          VERSION="${{ needs.detect.outputs.version }}"
-          cd "build-patch"
-          # -X 保留 macOS 扩展属性,-9 最大 deflate 压缩,--symlinks 保留软链接
-          zip -r -9 --symlinks -X "../out/Codex-${VERSION}-macos-x64.zip" "Codex.app"
-          cd "${{ github.workspace }}"
-          echo "ZIP: $(ls -lh out/*.zip)"
+          ls -lh out/
+          echo "---"
+          for f in out/*.dmg out/*.zip; do
+            [ -f "$f" ] && echo "$(basename $f): $(du -h "$f" | cut -f1)"
+          done
 
       - name: 上传 DMG
         uses: actions/upload-artifact@v4
@@ -281,26 +128,19 @@ jobs:
           path: out/*.dmg
           retention-days: 90
 
-      # 也上传 tar.gz 作为备用
-      - name: 创建 tar.gz
-        run: |
-          VERSION="${{ needs.detect.outputs.version }}"
-          tar czf "out/Codex-${VERSION}-macos-x64.tar.gz" \
-            -C build-patch Codex.app
-          echo "tar.gz ready"
-
-      - uses: actions/upload-artifact@v4
+      - name: 上传 ZIP
+        uses: actions/upload-artifact@v4
         with:
-          name: Codex-macOS-x64-tgz-${{ needs.detect.outputs.version }}
-          path: out/*.tar.gz
+          name: Codex-macOS-x64-zip-${{ needs.detect.outputs.version }}
+          path: out/*.zip
           retention-days: 90
 
   # ====================================================================
-  # Job 4: Linux (amd64 + arm64) — 直接组装 tar.gz,不用 Forge
-  # Forge 的 ignore/asar 配置对复杂目录结构兼容性差,直接组装更可靠
+  # Job 3: Linux (x64 + arm64) — 直接组装 tar.gz,不用 Forge
+  # Linux 独立下载 x64 ZIP,提取 ASAR 内容打补丁,搭配标准 Electron
   # ====================================================================
   build-linux:
-    needs: [detect, prepare]
+    needs: detect
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     strategy:
@@ -319,16 +159,53 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: 下载 prepare 产物
-        uses: actions/download-artifact@v4
-        with:
-          name: build-patch-${{ needs.detect.outputs.version }}
-          path: build-patch/
+      - name: Install 7zip
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+
+      - name: 同步上游 (下载 x64 ZIP)
+        run: |
+          VER="${{ needs.detect.outputs.version }}"
+          URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
+          echo "下载 Codex-darwin-x64-${VER}.zip ..."
+          curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 "$URL" -o "codex-x64.zip"
+          echo "OK: $(du -h codex-x64.zip | cut -f1)"
+
+      - name: 提取 app.asar + 资源
+        run: |
+          mkdir -p tmp-extract
+          7z x -y "codex-x64.zip" -o"tmp-extract" 2>/dev/null
+          APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
+          [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
+
+          # 提取 ASAR
+          mkdir -p src/mac-x64
+          npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
+          echo "_asar: $(find src/mac-x64/_asar -type f | wc -l) files"
+
+          # 复制 app.asar.unpacked (原生模块)
+          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
+            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "src/mac-x64/app.asar.unpacked"
+            echo "unpacked copied"
+          fi
+
+          # 复制其他资源 (codex 二进制, plugins, native 等)
+          for e in codex rg plugins native cua_node icon.png icon_16x16.png icon_32x32.png icon_128x128.png icon_256x256.png icon_512x512.png; do
+            [ -e "$APP_PATH/Contents/Resources/$e" ] && \
+              cp -a "$APP_PATH/Contents/Resources/$e" "src/mac-x64/$e" 2>/dev/null || true
+          done
+          echo "Resources copied"
+
+          rm -rf tmp-extract codex-x64.zip
+
+      - name: 打补丁 (AST-based, 与 macOS 相同)
+        run: node scripts/patch-all.js mac-x64
 
       - name: Repack app.asar
-        run: npx asar pack "build-patch/_asar" "build-patch/app.asar"
+        run: npx asar pack "src/mac-x64/_asar" "src/mac-x64/app.asar"
 
-      - name: 下载标准 Electron
+      - name: 下载标准 Electron ${{ matrix.arch }}
         run: |
           ARCH="${{ matrix.arch }}"
           VER="35.1.0"
@@ -336,7 +213,7 @@ jobs:
           curl -fSLk --connect-timeout 30 --max-time 300 --retry 3 \
             "https://github.com/electron/electron/releases/download/v${VER}/electron-v${VER}-linux-${ARCH}.zip" \
             -o "electron-tmp/electron.zip"
-          echo "Downloaded electron zip"
+          echo "Downloaded Electron v${VER} linux-${ARCH}"
 
       - name: 组装 Linux 目录
         run: |
@@ -347,10 +224,19 @@ jobs:
           rm -rf "$OUT" && mkdir -p "$OUT/resources" "$OUT/locales"
 
           # app.asar + app.asar.unpacked
-          cp build-patch/app.asar "$OUT/resources/"
-          if [ -d "build-patch/app.asar.unpacked" ]; then
-            cp -a build-patch/app.asar.unpacked "$OUT/resources/"
+          cp src/mac-x64/app.asar "$OUT/resources/"
+          if [ -d "src/mac-x64/app.asar.unpacked" ]; then
+            cp -a src/mac-x64/app.asar.unpacked "$OUT/resources/"
           fi
+
+          # 其他资源 (codex 二进制, plugins, native 等)
+          for e in codex rg plugins native cua_node; do
+            [ -e "src/mac-x64/$e" ] && cp -a "src/mac-x64/$e" "$OUT/resources/" 2>/dev/null || true
+          done
+          # 图标
+          for f in icon.png icon_512x512.png; do
+            [ -f "src/mac-x64/$f" ] && cp "src/mac-x64/$f" "$OUT/$f" 2>/dev/null || true
+          done
 
           # 解压 Electron
           mkdir -p electron-extract
@@ -370,15 +256,6 @@ jobs:
             [ -f "electron-extract/$f" ] && cp "electron-extract/$f" "$OUT/" 2>/dev/null || true
           done
           rm -rf electron-extract electron-tmp
-
-          # Node.js 运行时
-          mkdir -p "$OUT/resources/cua_node"
-          cat > "$OUT/resources/cua_node/manifest.json" << JSON
-          {
-            "platform":"linux","arch":"${ARCH}",
-            "target":"linux-${ARCH}","node_version":"24.14.0"
-          }
-          JSON
 
           # 启动脚本
           cat > "$OUT/Codex.sh" << 'LAUNCHER'
@@ -402,14 +279,10 @@ jobs:
           StartupWMClass=Codex
           DESKTOP
 
-          # 图标
-          if [ -f "build-patch/Codex.app/Contents/Resources/icon.png" ]; then
-            cp "build-patch/Codex.app/Contents/Resources/icon.png" "$OUT/Codex.png"
-          fi
-
           # 打包
           tar czf "Codex-${VER}-linux-${ARCH}.tar.gz" "$OUT"
-          echo "tar.gz: $(ls -lh Codex-*.tar.gz)"
+          echo "=== tar.gz ==="
+          ls -lh Codex-*.tar.gz
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
@@ -419,10 +292,10 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Job 5: 发布 Release
+  # Job 4: 发布 Release
   # ====================================================================
   release:
-    needs: [detect, prepare, build-macos-x64, build-linux]
+    needs: [detect, build-macos-x64, build-linux]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
