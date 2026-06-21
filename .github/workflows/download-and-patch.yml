@@ -110,7 +110,7 @@ jobs:
       - name: 打补丁 (AST-based)
         run: node scripts/patch-all.js mac-x64
 
-      - name: 构建 (asar repack → lipo → strip → cleanup → sign → DMG → ZIP)
+      - name: 构建 (ditto → repack → sign → DMG → ZIP)
         run: node scripts/build-from-upstream.js --platform mac-x64
 
       - name: 列出产物
