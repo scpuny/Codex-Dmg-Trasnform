@@ -76,16 +76,18 @@ function buildMac() {
 
   // 6. Ad-hoc sign
   console.log("   [codesign] signing");
-  try { execSync(`codesign --sign - --force --deep "${outApp}"`, { stdio: "pipe" }); console.log("   [codesign] OK"); }
-  catch (e) {
-    console.log("   [!] --deep failed, component fallback...");
-    try { execSync(`find "${outApp}" -path "*/Codex.app" -prune -o -name "*.app" -depth -print0 | xargs -0 codesign --sign - --force 2>/dev/null`, { stdio: "pipe" }); } catch {}
-    for (const d of ["Frameworks", "PlugIns"]) { const dd = path.join(outApp, "Contents", d); if (fs.existsSync(dd)) for (const i of fs.readdirSync(dd)) run(`codesign --sign - --force "${path.join(dd, i)}"`); }
-    run(`codesign --sign - --force "${outApp}"`);
+  try {
+    execSync(`codesign --sign - --force --deep "${outApp}"`, { stdio: "pipe" });
+    console.log("   [codesign] OK");
+  } catch (e) {
+    console.log("   [!] sign failed:", e.message.trim().split("\n")[0]);
   }
-  try { const v = execSync(`codesign -dvvv "${outApp}" 2>&1`, { encoding: "utf-8" }); for (const l of v.split("\n").filter(x => /^(Authority|Signed Time|Sealed Resources|Format|Identifier)/i.test(x))) console.log("   " + l.trim()); } catch {}
-
-  // 7. DMG (ULFO, 3 次重试防 Resource busy)
+  try {
+    const v = execSync(`codesign -dvvv "${outApp}" 2>&1`, { encoding: "utf-8" });
+    for (const l of v.split("\n").filter(x => /^(Authority|Signed Time|Sealed Resources|Format|Identifier)/i.test(x)))
+      console.log("   " + l.trim());
+  } catch {}
+// 7. DMG (ULFO, 3 次重试防 Resource busy)
   const ver = getVersion(asarDir);
   const dmgPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.dmg`);
   console.log("   [dmg] creating ULFO...");
