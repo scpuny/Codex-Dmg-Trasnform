@@ -112,19 +112,15 @@ jobs:
       - name: 构建 (ditto → repack → lipo → sign → DMG → ZIP)
         run: node scripts/build-from-upstream.js --platform mac-x64
 
-      - name: 上传 DMG
+      - name: 上传 macOS 构建产物 (DMG + ZIP)
         uses: actions/upload-artifact@v4
         with:
-          name: Codex-macOS-x64-${{ needs.detect.outputs.version }}
-          path: out/*.dmg
+          name: Codex-macOS-${{ needs.detect.outputs.version }}
+          path: |
+            out/*.dmg
+            out/*.zip
           retention-days: 90
 
-      - name: 上传 ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: Codex-macOS-x64-zip-${{ needs.detect.outputs.version }}
-          path: out/*.zip
-          retention-days: 90
 
   # ====================================================================
   # Job 3: Linux (x64 + arm64) — 直接组装 tar.gz
@@ -241,21 +237,18 @@ jobs:
   # 只依赖 detect + macOS，Linux 产物可选（有就包含）
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64]
+    needs: [detect, build-macos-x64, build-linux]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: 下载 macOS 产物
+      - name: 下载 macOS 产物 (DMG + ZIP)
         uses: actions/download-artifact@v4
         with:
-          pattern: Codex-macOS-*
+          name: Codex-macOS-${{ needs.detect.outputs.version }}
           path: artifacts
-          merge-multiple: true
-
-      - name: 下载 Linux 产物（可选）
-        continue-on-error: true
+      - name: 下载 Linux 产物
         uses: actions/download-artifact@v4
         with:
           pattern: Codex-linux-*
