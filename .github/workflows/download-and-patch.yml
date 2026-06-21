@@ -82,8 +82,7 @@ jobs:
           fi
 
   # ====================================================================
-  # Job 2: macOS Intel (x86_64) — 下载 → 提取 → 补丁 → 签名 → DMG
-  # 完整流程在 macOS runner 上执行,使用 ditto 保留符号链接和资源分支
+  # Job 2: macOS Intel (x86_64) — 下载 → 提取 → 补丁 → 签名 → DMG → ZIP
   # ====================================================================
   build-macos-x64:
     needs: detect
@@ -110,16 +109,8 @@ jobs:
       - name: 打补丁 (AST-based)
         run: node scripts/patch-all.js mac-x64
 
-      - name: 构建 (ditto → repack → sign → DMG → ZIP)
+      - name: 构建 (ditto → repack → lipo → sign → DMG → ZIP)
         run: node scripts/build-from-upstream.js --platform mac-x64
-
-      - name: 列出产物
-        run: |
-          ls -lh out/
-          echo "---"
-          for f in out/*.dmg out/*.zip; do
-            [ -f "$f" ] && echo "$(basename $f): $(du -h "$f" | cut -f1)"
-          done
 
       - name: 上传 DMG
         uses: actions/upload-artifact@v4
@@ -136,8 +127,7 @@ jobs:
           retention-days: 90
 
   # ====================================================================
-  # Job 3: Linux (x64 + arm64) — 直接组装 tar.gz,不用 Forge
-  # Linux 独立下载 x64 ZIP,提取 ASAR 内容打补丁,搭配标准 Electron
+  # Job 3: Linux (x64 + arm64) — 直接组装 tar.gz
   # ====================================================================
   build-linux:
     needs: detect
@@ -168,9 +158,8 @@ jobs:
         run: |
           VER="${{ needs.detect.outputs.version }}"
           URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
-          echo "下载 Codex-darwin-x64-${VER}.zip ..."
           curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 "$URL" -o "codex-x64.zip"
-          echo "OK: $(du -h codex-x64.zip | cut -f1)"
+          echo "Downloaded: $(du -h codex-x64.zip | cut -f1)"
 
       - name: 提取 app.asar + 资源
         run: |
@@ -178,25 +167,15 @@ jobs:
           7z x -y "codex-x64.zip" -o"tmp-extract" 2>/dev/null
           APP_PATH="$(find "$PWD/tmp-extract" -maxdepth 3 -name "Codex.app" -type d | head -1)"
           [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
-
-          # 提取 ASAR
           mkdir -p src/mac-x64
           npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
-          echo "_asar: $(find src/mac-x64/_asar -type f | wc -l) files"
-
-          # 复制 app.asar.unpacked (原生模块)
           if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
             cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "src/mac-x64/app.asar.unpacked"
-            echo "unpacked copied"
           fi
-
-          # 复制其他资源 (codex 二进制, plugins, native 等)
-          for e in codex rg plugins native cua_node icon.png icon_16x16.png icon_32x32.png icon_128x128.png icon_256x256.png icon_512x512.png; do
+          for e in codex rg plugins native cua_node icon.png icon_512x512.png; do
             [ -e "$APP_PATH/Contents/Resources/$e" ] && \
               cp -a "$APP_PATH/Contents/Resources/$e" "src/mac-x64/$e" 2>/dev/null || true
           done
-          echo "Resources copied"
-
           rm -rf tmp-extract codex-x64.zip
 
       - name: 打补丁 (AST-based, 与 macOS 相同)
@@ -213,51 +192,32 @@ jobs:
           curl -fSLk --connect-timeout 30 --max-time 300 --retry 3 \
             "https://github.com/electron/electron/releases/download/v${VER}/electron-v${VER}-linux-${ARCH}.zip" \
             -o "electron-tmp/electron.zip"
-          echo "Downloaded Electron v${VER} linux-${ARCH}"
 
       - name: 组装 Linux 目录
         run: |
           ARCH="${{ matrix.arch }}"
           VER="${{ needs.detect.outputs.version }}"
           OUT="Codex-linux-${ARCH}"
-
           rm -rf "$OUT" && mkdir -p "$OUT/resources" "$OUT/locales"
-
-          # app.asar + app.asar.unpacked
           cp src/mac-x64/app.asar "$OUT/resources/"
-          if [ -d "src/mac-x64/app.asar.unpacked" ]; then
-            cp -a src/mac-x64/app.asar.unpacked "$OUT/resources/"
-          fi
-
-          # 其他资源 (codex 二进制, plugins, native 等)
+          [ -d "src/mac-x64/app.asar.unpacked" ] && cp -a src/mac-x64/app.asar.unpacked "$OUT/resources/"
           for e in codex rg plugins native cua_node; do
             [ -e "src/mac-x64/$e" ] && cp -a "src/mac-x64/$e" "$OUT/resources/" 2>/dev/null || true
           done
-          # 图标
           for f in icon.png icon_512x512.png; do
             [ -f "src/mac-x64/$f" ] && cp "src/mac-x64/$f" "$OUT/$f" 2>/dev/null || true
           done
-
-          # 解压 Electron
-          mkdir -p electron-extract
-          unzip -q "electron-tmp/electron.zip" -d "electron-extract"
+          mkdir -p electron-extract && unzip -q "electron-tmp/electron.zip" -d "electron-extract"
           cp electron-extract/electron "$OUT/" && chmod +x "$OUT/electron"
-          for f in electron-extract/*.so*; do
-            [ -f "$f" ] && cp "$f" "$OUT/" 2>/dev/null || true
-          done
-          for f in icudtl.dat snapshot_blob.bin v8_context_snapshot.bin \
-            LICENSES.chromium.html LICENSE.electron.txt; do
+          for f in electron-extract/*.so*; do [ -f "$f" ] && cp "$f" "$OUT/" 2>/dev/null || true; done
+          for f in icudtl.dat snapshot_blob.bin v8_context_snapshot.bin LICENSES.chromium.html LICENSE.electron.txt; do
             [ -f "electron-extract/$f" ] && cp "electron-extract/$f" "$OUT/" 2>/dev/null || true
           done
-          if [ -d "electron-extract/locales" ]; then
-            cp electron-extract/locales/*.pak "$OUT/locales/" 2>/dev/null || true
-          fi
+          [ -d "electron-extract/locales" ] && cp electron-extract/locales/*.pak "$OUT/locales/" 2>/dev/null || true
           for f in libEGL.so libGLESv2.so libvk_swiftshader.so vk_swiftshader_icd.json; do
             [ -f "electron-extract/$f" ] && cp "electron-extract/$f" "$OUT/" 2>/dev/null || true
           done
           rm -rf electron-extract electron-tmp
-
-          # 启动脚本
           cat > "$OUT/Codex.sh" << 'LAUNCHER'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -266,23 +226,8 @@ jobs:
           exec "$DIR/electron" "$DIR/resources/app.asar" "$@"
           LAUNCHER
           chmod +x "$OUT/Codex.sh"
-
-          # 桌面文件
-          cat > "$OUT/Codex.desktop" << DESKTOP
-          [Desktop Entry]
-          Name=Codex
-          Comment=AI-powered coding assistant by OpenAI
-          Exec=${OUT}/Codex.sh
-          Terminal=false
-          Type=Application
-          Categories=Development;Utility;
-          StartupWMClass=Codex
-          DESKTOP
-
-          # 打包
           tar czf "Codex-${VER}-linux-${ARCH}.tar.gz" "$OUT"
-          echo "=== tar.gz ==="
-          ls -lh Codex-*.tar.gz
+          echo "tar.gz: $(ls -lh Codex-*.tar.gz)"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
@@ -293,21 +238,34 @@ jobs:
 
   # ====================================================================
   # Job 4: 发布 Release
+  # 只依赖 detect + macOS，Linux 产物可选（有就包含）
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64, build-linux]
+    needs: [detect, build-macos-x64]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+
+      - name: 下载 macOS 产物
+        uses: actions/download-artifact@v4
         with:
+          pattern: Codex-macOS-*
           path: artifacts
+          merge-multiple: true
+
+      - name: 下载 Linux 产物（可选）
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Codex-linux-*
+          path: artifacts
+          merge-multiple: true
 
       - name: 列出产物
         run: |
           find artifacts -type f | sort
-          du -sh artifacts/*/
+          du -sh artifacts/* 2>/dev/null || true
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -317,8 +275,8 @@ jobs:
             ## Codex ${{ needs.detect.outputs.version }}
             从官方 appcast-x64.xml 构建。保留原始 Codex Framework、AST 精准补丁。
           files: |
-            artifacts/**/*.dmg
-            artifacts/**/*.zip
-            artifacts/**/*.tar.gz
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.tar.gz
           draft: false
           prerelease: false
