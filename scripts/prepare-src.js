@@ -68,7 +68,7 @@ function ensureVendorExtracted(platform) {
   try {
     const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "codex-vendor-"));
     const baseVer = execSync("npm view @cometix/codex version", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim().split("\n").pop();
-    const suffix = platform === "linux-x64" ? "amd64" : "arm64";
+    const suffix = platform === "linux-x64" ? "linux-x64" : "linux-arm64";
     const spec = `@cometix/codex@${baseVer}-${suffix}`;
     console.log(`   [vendor] fetching ${spec} via npm pack...`);
     const tgzName = execSync(`npm pack ${spec} --pack-destination "${tmpDir}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim().split("\n").pop();
@@ -76,8 +76,22 @@ function ensureVendorExtracted(platform) {
     if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true });
     fs.mkdirSync(extractDir, { recursive: true });
     execSync(`tar xzf "${path.join(tmpDir, tgzName)}" -C "${extractDir}"`, { stdio: "pipe" });
+
+    // The vendor path uses the triple directly under vendor/
     const vendorRoot = path.join(extractDir, "package", "vendor", triple);
     if (fs.existsSync(vendorRoot)) return vendorRoot;
+
+    // Also try listing vendor/ subdirs to find the correct one
+    const vendorDir = path.join(extractDir, "package", "vendor");
+    if (fs.existsSync(vendorDir)) {
+      for (const subdir of fs.readdirSync(vendorDir)) {
+        const candidate = path.join(vendorDir, subdir, "codex", "codex");
+        if (fs.existsSync(candidate)) {
+          console.log(`   [vendor] found at vendor/${subdir}`);
+          return path.join(vendorDir, subdir);
+        }
+      }
+    }
   } catch (e) {
     console.log(`   [!] npm pack failed: ${e.message}`);
   }
