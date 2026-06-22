@@ -37,6 +37,25 @@ function copyRecursive(src, dest) {
   return count;
 }
 
+// Like copyRecursive but only copies files that pass the filter function.
+// Used on Linux to skip Mach-O .node files from upstream fallback.
+function copyRecursiveFiltered(src, dest, filter) {
+  fs.mkdirSync(dest, { recursive: true });
+  let count = 0;
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, e.name), d = path.join(dest, e.name);
+    if (e.isDirectory()) {
+      const sub = copyRecursiveFiltered(s, d, filter);
+      // Clean up empty dirs
+      try { if (fs.readdirSync(d).length === 0) fs.rmdirSync(d); } catch {}
+      count += sub;
+    }
+    else if (e.isSymbolicLink()) { /* skip */ }
+    else if (filter(s)) { fs.copyFileSync(s, d); count++; }
+  }
+  return count;
+}
+
 function hasNativeFiles(dir) {
   if (!fs.existsSync(dir)) return false;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -97,13 +116,25 @@ function main() {
     } else if (fs.existsSync(upstreamDir)) {
       source = upstreamDir;
       sourceLabel = "upstream";
+      // On Linux, warn if upstream has .node files (likely Mach-O, not usable)
+      if (isLinux && hasNativeFiles(upstreamDir)) {
+        console.log(`   [!] ${mod} upstream has .node files (Mach-O), will skip them`);
+      }
     } else {
       console.log(`   [!] ${mod} not found in project or upstream`);
       continue;
     }
 
     const destDir = path.join(SRC_MODULES, mod);
-    const count = copyRecursive(source, destDir);
+
+    // On Linux, if using upstream fallback with native files, skip .node files
+    // (they are Mach-O from macOS and cannot be loaded on Linux)
+    let count;
+    if (isLinux && sourceLabel === "upstream") {
+      count = copyRecursiveFiltered(source, destDir, (f) => !f.endsWith(".node"));
+    } else {
+      count = copyRecursive(source, destDir);
+    }
     totalCopied += count;
     console.log(`   [${sourceLabel}] ${mod} (${count} files)`);
   }
