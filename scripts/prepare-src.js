@@ -177,7 +177,10 @@ function main() {
 
   // 3. For Linux: copy _asar/ content to flat src/ (forge packs ASAR from src/)
   //    Skip node_modules/ — upstream has macOS .node binaries.
-  //    Native modules are rebuilt by electron-rebuild and synced separately.
+  //    Native modules are rebuilt by electron-rebuild → sync-native-modules.js
+  //    and end up in src/node_modules/. Forge's asar.unpack config unpacks
+  //    .node files to app.asar.unpacked/ automatically.
+  //    Do NOT copy mac-x64/app.asar.unpacked/ — it contains Mach-O .node files.
   if (isLinux) {
     // Clear flat src/ dirs
     for (const d of [".vite", "webview", "skills", "native-menu-locales", "node_modules"]) {
@@ -192,13 +195,6 @@ function main() {
     const skipDirs = new Set(["node_modules"]);
     const count = copyRecursive(asarContentDir, SRC, null, skipDirs);
     console.log(`   [linux] _asar/ -> src/ (${count} files, skipped node_modules/)`);
-
-    // Copy app.asar.unpacked module list (for reference by sync-native-modules.js)
-    const unpackedDir = path.join(sourceDir, "app.asar.unpacked");
-    if (fs.existsSync(unpackedDir)) {
-      const n = copyRecursive(unpackedDir, path.join(SRC, "app.asar.unpacked"));
-      console.log(`   [linux] app.asar.unpacked/ -> src/ (${n} files)`);
-    }
   }
 
   // 4. Sync version to root package.json
