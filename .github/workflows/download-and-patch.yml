@@ -243,8 +243,9 @@ jobs:
           files: |
             artifacts/*.dmg
             artifacts/*.zip
-            artifacts/*.tar.gz
-            artifacts/*.deb
-            artifacts/*.rpm
+            artifacts/**/*.tar.gz
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
+            artifacts/**/*.zip
           draft: false
           prerelease: false
