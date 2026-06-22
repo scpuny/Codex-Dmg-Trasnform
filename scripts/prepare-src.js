@@ -220,13 +220,14 @@ function main() {
     console.log(`   version: ${oldVer} -> ${rootPkg.version}`);
   }
 
-  // Create bootstrap.js stub for forge validation (both macOS and Linux need main entry)
-  const stubDir = path.join(SRC, ".vite", "build");
-  fs.mkdirSync(stubDir, { recursive: true });
-  fs.writeFileSync(path.join(stubDir, "bootstrap.js"), "// stub - real code in app.asar\n");
-  
-  // For macOS: also copy package.json from upstream
+  // For macOS (upstream-asar mode): create stub for forge validation.
+  // For Linux: the real bootstrap.js from _asar/ is already in src/ — keep it.
   if (!isLinux) {
+    const stubDir = path.join(SRC, ".vite", "build");
+    fs.mkdirSync(stubDir, { recursive: true });
+    fs.writeFileSync(path.join(stubDir, "bootstrap.js"), "// stub - real code in app.asar\n");
+    
+    // Also copy package.json from upstream for forge validation
     const asarPkg = path.join(asarContentDir, "package.json");
     if (fs.existsSync(asarPkg)) {
       fs.copyFileSync(asarPkg, path.join(SRC, "package.json"));
