@@ -112,6 +112,17 @@ jobs:
       - name: 构建 (ditto → repack → lipo → sign → DMG → ZIP)
         run: node scripts/build-from-upstream.js --platform mac-x64
 
+      - name: 重命名 macOS 产物 (统一格式)
+        run: |
+          VER="${{ needs.detect.outputs.version }}"
+          for f in out/*.dmg out/*.zip; do
+            [ -f "$f" ] || continue
+            dir="$(dirname "$f")"
+            ext="${f##*.}"
+            mv -v "$f" "$dir/Codex_macos-x64_${VER}.${ext}"
+          done
+          ls -la out/
+
       - name: 上传 macOS 构建产物 (DMG + ZIP)
         uses: actions/upload-artifact@v4
         with:
@@ -192,6 +203,33 @@ jobs:
           rm -rf out
           npx electron-forge make --platform=linux --arch=$ARCH
           echo "Forge make output:"
+          find out/make -type f 2>/dev/null | sort
+
+      - name: 重命名 Linux 产物 (统一格式: Codex_平台_版本.包名)
+        run: |
+          VER="${{ needs.detect.outputs.version }}"
+          PLATFORM="linux-${{ matrix.arch }}"
+          for f in $(find out/make -type f 2>/dev/null); do
+            dir="$(dirname "$f")"
+            ext="${f##*.}"
+            case "$ext" in
+              deb) new="Codex_${PLATFORM}_${VER}.deb" ;;
+              rpm) new="Codex_${PLATFORM}_${VER}.rpm" ;;
+              gz|zip)
+                # .tar.gz needs special handling
+                base="${f%.*}"
+                baseext="${base##*.}"
+                if [ "$baseext" = "tar" ]; then
+                  new="Codex_${PLATFORM}_${VER}.tar.gz"
+                else
+                  new="Codex_${PLATFORM}_${VER}.${ext}"
+                fi
+                ;;
+              *) new="Codex_${PLATFORM}_${VER}.${ext}" ;;
+            esac
+            mv -v "$f" "$dir/$new"
+          done
+          echo "Renamed output:"
           find out/make -type f 2>/dev/null | sort
 
       - name: 上传 Linux 产物

@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# Ensure chrome-sandbox has proper SUID permissions
+SANDBOX="/usr/lib/codex/chrome-sandbox"
+if [ -f "$SANDBOX" ]; then
+    chown root:root "$SANDBOX" 2>/dev/null || true
+    chmod 4755 "$SANDBOX" 2>/dev/null || true
+fi
+
+# Update desktop database
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database 2>/dev/null || true
+fi
+
+exit 0

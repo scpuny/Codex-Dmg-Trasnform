@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Codex
+Comment=Codex Electron App - Cross-platform Build
+GenericName=AI Coding Assistant
+Exec=/usr/lib/codex/codex-wrapper %U
+Icon=codex
+Type=Application
+StartupNotify=true
+Categories=Development;Utility;

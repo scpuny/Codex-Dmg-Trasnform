@@ -89,7 +89,7 @@ function buildMac() {
   } catch {}
 // 7. DMG (ULFO, 3 次重试防 Resource busy)
   const ver = getVersion(asarDir);
-  const dmgPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.dmg`);
+  const dmgPath = path.join(OUT_DIR, `Codex_macos-x64_${ver}.dmg`);
   console.log("   [dmg] creating ULFO...");
   run(`hdiutil detach -quiet "/Volumes/Codex"`);
   for (let i = 1; i <= 3; i++) {
@@ -104,7 +104,7 @@ function buildMac() {
   if (fs.existsSync(dmgPath)) console.log("   [ok] DMG:", (fs.statSync(dmgPath).size / 1048576).toFixed(1), "MB");
 
   // 8. ZIP (redirect stdout to avoid ENOBUFS)
-  const zipPath = path.join(OUT_DIR, `Codex-${ver}-macos-x64.zip`);
+  const zipPath = path.join(OUT_DIR, `Codex_macos-x64_${ver}.zip`);
   console.log("   [zip] creating...");
   execSync(`cd "${outAppDir}" && zip -r -9 --symlinks -X "${zipPath}" "Codex.app" >/dev/null 2>&1`, { stdio: "pipe" });
   console.log("   [ok] ZIP:", (fs.statSync(zipPath).size / 1048576).toFixed(1), "MB");

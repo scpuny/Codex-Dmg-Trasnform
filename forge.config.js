@@ -56,7 +56,7 @@ module.exports = {
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     {
       name: "@electron-forge/maker-deb",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "OpenAI", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png" } },
+      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "OpenAI", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png", desktopTemplate: path.join(__dirname, "resources", "codex.desktop"), scripts: path.join(__dirname, "resources", "deb-scripts") } },
     },
     {
       name: "@electron-forge/maker-rpm",
@@ -170,7 +170,8 @@ module.exports = {
           }
         }
         // Create wrapper script (fixes sandbox issues in desktop launchers)
-        const wrapperPath = path.join(resourcesPath, "codex-wrapper");
+        // Write one level above resources/ so it ends up at /usr/lib/codex/codex-wrapper
+        const wrapperPath = path.join(resourcesPath, "..", "codex-wrapper");
         if (!fs.existsSync(wrapperPath)) {
           fs.writeFileSync(wrapperPath, `#!/bin/bash
 HERE="$(cd "$(dirname "$0")" && pwd)"
