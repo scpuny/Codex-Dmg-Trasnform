@@ -29,9 +29,10 @@ module.exports = {
             return true;
           }
         : (filePath) => {
+            // Linux mode: src/ is flat (copied from _asar/), no /src subdirectory
             if (filePath === "") return false;
             if (filePath === "/package.json") return false;
-            const allowed = ["/src/.vite/build", "/src/webview", "/src/skills", "/src/native-menu-locales", "/src/node_modules"];
+            const allowed = ["/.vite/build", "/webview", "/skills", "/native-menu-locales", "/node_modules"];
             for (const p of allowed) {
               if (p.startsWith(filePath) || filePath.startsWith(p)) return false;
             }

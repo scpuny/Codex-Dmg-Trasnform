@@ -133,14 +133,16 @@ node scripts/build-from-upstream.js --platform mac-x64  # Repack → sign → DM
 
 ```bash
 npm ci
-# Download macOS x64/arm64 ZIP → extract to src/mac-x64/ (or mac-arm64/)
+# Download macOS x64 ZIP → extract to src/mac-x64/
 node scripts/patch-all.js mac-x64           # AST patches (platform agnostic)
 node scripts/prepare-src.js --platform linux-x64  # Prepare src/ for forge
 npm run rebuild:native                      # electron-rebuild
 node scripts/sync-native-modules.js --platform linux-x64
-npx electron-forge make --platform=linux --arch=x64
-# Output: out/make/deb/, out/make/rpm/, out/make/zip/
+rm -rf out && npx electron-forge make --platform=linux --arch=x64
+# Output: out/make/deb/, out/make/rpm/, out/make/zip/ (all formats)
 ```
+
+**Note**: Linux builds now use Electron Forge's full pipeline (not manual assembly), producing `.deb`, `.rpm`, and `.tar.gz` automatically.
 
 ## CI/CD (GitHub Actions)
 

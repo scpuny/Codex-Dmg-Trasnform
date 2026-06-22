@@ -123,7 +123,7 @@ jobs:
 
 
   # ====================================================================
-  # Job 3: Linux (x64 + arm64) — 直接组装 tar.gz
+  # Job 3: Linux (x64 + arm64) — Electron Forge make (deb/rpm/zip)
   # ====================================================================
   build-linux:
     needs: detect
@@ -133,7 +133,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -150,14 +150,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq p7zip-full
 
-      - name: 同步上游 (下载 x64 ZIP)
+      - name: 同步上游 (下载 macOS x64 ZIP)
         run: |
           VER="${{ needs.detect.outputs.version }}"
           URL="https://persistent.oaistatic.com/codex-app-prod/Codex-darwin-x64-${VER}.zip"
           curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 "$URL" -o "codex-x64.zip"
           echo "Downloaded: $(du -h codex-x64.zip | cut -f1)"
 
-      - name: 提取 app.asar + 资源
+      - name: 提取 _asar/ 到 src/mac-x64/
         run: |
           mkdir -p tmp-extract
           7z x -y "codex-x64.zip" -o"tmp-extract" 2>/dev/null
@@ -174,62 +174,35 @@ jobs:
           done
           rm -rf tmp-extract codex-x64.zip
 
-      - name: 打补丁 (AST-based, 与 macOS 相同)
+      - name: 打补丁 (AST-based)
         run: node scripts/patch-all.js mac-x64
 
-      - name: Repack app.asar
-        run: npx asar pack "src/mac-x64/_asar" "src/mac-x64/app.asar"
+      - name: 准备 Linux 构建环境 (prepare-src)
+        run: node scripts/prepare-src.js --platform linux-${{ matrix.arch }}
 
-      - name: 下载标准 Electron ${{ matrix.arch }}
+      - name: 重建 native modules (electron-rebuild)
+        run: npm run rebuild:native
+
+      - name: 同步 native modules 到 src/
+        run: node scripts/sync-native-modules.js --platform linux-${{ matrix.arch }}
+
+      - name: 构建 Linux 包 (electron-forge make)
         run: |
           ARCH="${{ matrix.arch }}"
-          VER="35.1.0"
-          mkdir -p electron-tmp
-          curl -fSLk --connect-timeout 30 --max-time 300 --retry 3 \
-            "https://github.com/electron/electron/releases/download/v${VER}/electron-v${VER}-linux-${ARCH}.zip" \
-            -o "electron-tmp/electron.zip"
+          rm -rf out
+          npx electron-forge make --platform=linux --arch=$ARCH
+          echo "Forge make output:"
+          find out/make -type f 2>/dev/null | sort
 
-      - name: 组装 Linux 目录
-        run: |
-          ARCH="${{ matrix.arch }}"
-          VER="${{ needs.detect.outputs.version }}"
-          OUT="Codex-linux-${ARCH}"
-          rm -rf "$OUT" && mkdir -p "$OUT/resources" "$OUT/locales"
-          cp src/mac-x64/app.asar "$OUT/resources/"
-          [ -d "src/mac-x64/app.asar.unpacked" ] && cp -a src/mac-x64/app.asar.unpacked "$OUT/resources/"
-          for e in codex rg plugins native cua_node; do
-            [ -e "src/mac-x64/$e" ] && cp -a "src/mac-x64/$e" "$OUT/resources/" 2>/dev/null || true
-          done
-          for f in icon.png icon_512x512.png; do
-            [ -f "src/mac-x64/$f" ] && cp "src/mac-x64/$f" "$OUT/$f" 2>/dev/null || true
-          done
-          mkdir -p electron-extract && unzip -q "electron-tmp/electron.zip" -d "electron-extract"
-          cp electron-extract/electron "$OUT/" && chmod +x "$OUT/electron"
-          for f in electron-extract/*.so*; do [ -f "$f" ] && cp "$f" "$OUT/" 2>/dev/null || true; done
-          for f in icudtl.dat snapshot_blob.bin v8_context_snapshot.bin LICENSES.chromium.html LICENSE.electron.txt; do
-            [ -f "electron-extract/$f" ] && cp "electron-extract/$f" "$OUT/" 2>/dev/null || true
-          done
-          [ -d "electron-extract/locales" ] && cp electron-extract/locales/*.pak "$OUT/locales/" 2>/dev/null || true
-          for f in libEGL.so libGLESv2.so libvk_swiftshader.so vk_swiftshader_icd.json; do
-            [ -f "electron-extract/$f" ] && cp "electron-extract/$f" "$OUT/" 2>/dev/null || true
-          done
-          rm -rf electron-extract electron-tmp
-          cat > "$OUT/Codex.sh" << 'LAUNCHER'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          export ELECTRON_IS_DEV=0
-          exec "$DIR/electron" "$DIR/resources/app.asar" "$@"
-          LAUNCHER
-          chmod +x "$OUT/Codex.sh"
-          tar czf "Codex-${VER}-linux-${ARCH}.tar.gz" "$OUT"
-          echo "tar.gz: $(ls -lh Codex-*.tar.gz)"
-
-      - name: 上传产物
+      - name: 上传 Linux 产物
         uses: actions/upload-artifact@v4
         with:
           name: Codex-linux-${{ matrix.arch }}-${{ needs.detect.outputs.version }}
-          path: Codex-*.tar.gz
+          path: |
+            out/make/**/*.deb
+            out/make/**/*.rpm
+            out/make/**/*.tar.gz
+            out/make/**/*.zip
           retention-days: 90
 
   # ====================================================================
@@ -271,5 +244,7 @@ jobs:
             artifacts/*.dmg
             artifacts/*.zip
             artifacts/*.tar.gz
+            artifacts/*.deb
+            artifacts/*.rpm
           draft: false
           prerelease: false
