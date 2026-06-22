@@ -50,25 +50,54 @@ function copyRecursive(src, dest, skipFiles, skipDirs) {
   return count;
 }
 
-function resolveCodexVendor(platform) {
+function ensureVendorExtracted(platform) {
   const triple = TARGET_TRIPLE_MAP[platform];
   if (!triple) return null;
-  const binName = "codex";
 
+  // Check if already extracted locally
   const PKG_MAP = {
     "linux-x64": "codex-linux-x64", "linux-arm64": "codex-linux-arm64",
-    "mac-x64": "codex-darwin-x64",
   };
   const platPkg = PKG_MAP[platform];
   if (platPkg) {
-    const p = path.join(PROJECT_ROOT, "node_modules", "@cometix", platPkg, "vendor", triple, "codex", binName);
+    const p = path.join(PROJECT_ROOT, "node_modules", "@cometix", platPkg, "vendor", triple);
     if (fs.existsSync(p)) return p;
   }
-  // Old-style vendor path
-  const oldPath = path.join(PROJECT_ROOT, "node_modules", "@cometix", "codex", "vendor", triple, "codex", binName);
-  if (fs.existsSync(oldPath)) return oldPath;
 
+  // Try npm pack
+  try {
+    const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "codex-vendor-"));
+    const baseVer = execSync("npm view @cometix/codex version", { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim().split("\n").pop();
+    const suffix = platform === "linux-x64" ? "amd64" : "arm64";
+    const spec = `@cometix/codex@${baseVer}-${suffix}`;
+    console.log(`   [vendor] fetching ${spec} via npm pack...`);
+    const tgzName = execSync(`npm pack ${spec} --pack-destination "${tmpDir}"`, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim().split("\n").pop();
+    const extractDir = path.join(tmpDir, "extracted");
+    if (fs.existsSync(extractDir)) fs.rmSync(extractDir, { recursive: true });
+    fs.mkdirSync(extractDir, { recursive: true });
+    execSync(`tar xzf "${path.join(tmpDir, tgzName)}" -C "${extractDir}"`, { stdio: "pipe" });
+    const vendorRoot = path.join(extractDir, "package", "vendor", triple);
+    if (fs.existsSync(vendorRoot)) return vendorRoot;
+  } catch (e) {
+    console.log(`   [!] npm pack failed: ${e.message}`);
+  }
   return null;
+}
+
+function resolveCodexVendor(platform) {
+  const vendorRoot = ensureVendorExtracted(platform);
+  if (!vendorRoot) return null;
+  const binName = "codex";
+  const p = path.join(vendorRoot, "codex", binName);
+  return fs.existsSync(p) ? p : null;
+}
+
+function resolveRgVendor(platform) {
+  const vendorRoot = ensureVendorExtracted(platform);
+  if (!vendorRoot) return null;
+  const binName = "rg";
+  const p = path.join(vendorRoot, "path", binName);
+  return fs.existsSync(p) ? p : null;
 }
 
 function main() {
@@ -117,6 +146,19 @@ function main() {
     console.log(`   [codex] replaced with @cometix/codex`);
   } else {
     console.log(`   [!] @cometix/codex vendor not found for ${platform}, keeping upstream`);
+  }
+
+  // 2b. For Linux: replace rg with platform-native version from @cometix/codex
+  if (isLinux) {
+    const vendorRg = resolveRgVendor(platform);
+    if (vendorRg) {
+      const dest = path.join(sourceDir, "rg");
+      fs.copyFileSync(vendorRg, dest);
+      try { fs.chmodSync(dest, 0o755); } catch {}
+      console.log(`   [rg] replaced with Linux rg from @cometix/codex`);
+    } else {
+      console.log(`   [!] Linux rg not found in vendor, keeping upstream`);
+    }
   }
 
   // 3. For Linux: copy _asar/ content to flat src/ (forge packs ASAR from src/)

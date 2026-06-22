@@ -169,6 +169,16 @@ module.exports = {
             }
           }
         }
+        // Create wrapper script (fixes sandbox issues in desktop launchers)
+        const wrapperPath = path.join(resourcesPath, "codex-wrapper");
+        if (!fs.existsSync(wrapperPath)) {
+          fs.writeFileSync(wrapperPath, `#!/bin/bash
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/Codex" --no-sandbox "$@"
+`);
+          fs.chmodSync(wrapperPath, 0o755);
+          console.log(`   [wrapper] codex-wrapper created`);
+        }
       }
 
       console.log(`   [ok] ${copied} files (app.asar + unpacked + resources)`);
