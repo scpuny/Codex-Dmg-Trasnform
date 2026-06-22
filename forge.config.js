@@ -56,7 +56,7 @@ module.exports = {
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     {
       name: "@electron-forge/maker-deb",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "OpenAI", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png", desktopTemplate: path.join(__dirname, "resources", "codex.desktop"), scripts: path.join(__dirname, "resources", "deb-scripts") } },
+      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "OpenAI", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png", desktopTemplate: path.join(__dirname, "resources", "codex.desktop"), scripts: { postinst: path.join(__dirname, "resources", "deb-scripts", "postinst") } } },
     },
     {
       name: "@electron-forge/maker-rpm",
