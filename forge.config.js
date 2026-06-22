@@ -29,10 +29,11 @@ module.exports = {
             return true;
           }
         : (filePath) => {
-            // Linux mode: src/ is flat (copied from _asar/), no /src subdirectory
+            // Linux mode: paths are absolute from project root
+            // filePath format: /src/.vite/build/bootstrap.js, /package.json, etc.
             if (filePath === "") return false;
             if (filePath === "/package.json") return false;
-            const allowed = ["/.vite/build", "/webview", "/skills", "/native-menu-locales", "/node_modules"];
+            const allowed = ["/src/.vite/build", "/src/webview", "/src/skills", "/src/native-menu-locales", "/src/node_modules"];
             for (const p of allowed) {
               if (p.startsWith(filePath) || filePath.startsWith(p)) return false;
             }
