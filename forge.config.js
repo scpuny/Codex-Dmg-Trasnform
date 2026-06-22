@@ -85,13 +85,12 @@ module.exports = {
       const resourcesPath = path.dirname(buildPath);
       const isLinux = platform === "linux";
 
-      // For macOS: use mac-x64 platform dir
-      // For Linux: use the source dir corresponding to the arch
+      // For Linux: ASAR is platform-agnostic, always use mac-x64 as source
       let platformKey;
       if (platform === "darwin") {
         platformKey = "mac-x64";
       } else if (platform === "linux") {
-        platformKey = arch === "arm64" ? "mac-arm64" : "mac-x64";
+        platformKey = "mac-x64";
       } else {
         console.log(`   [!] Unsupported platform: ${platform}`);
         return;
