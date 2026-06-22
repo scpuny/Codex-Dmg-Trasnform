@@ -98,7 +98,7 @@ jobs:
           cache: npm
 
       - name: Install npm deps
-        run: npm ci
+        run: npm install
 
       - name: Install 7zip
         run: brew install --quiet sevenzip
@@ -154,7 +154,7 @@ jobs:
           cache: npm
 
       - name: Install npm deps
-        run: npm ci
+        run: npm install
 
       - name: Install 7zip
         run: |
