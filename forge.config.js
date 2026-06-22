@@ -142,6 +142,36 @@ module.exports = {
         }
       }
 
+      // Filter architecture-specific binaries in cua_node for Linux
+      if (isLinux) {
+        const cuaNodeSkyBin = path.join(resourcesPath, "cua_node", "lib", "node_modules", "@oai", "sky", "bin", "linux");
+        if (fs.existsSync(cuaNodeSkyBin)) {
+          const keepSuffix = arch === "arm64" ? "arm64" : "x64";
+          for (const f of fs.readdirSync(cuaNodeSkyBin)) {
+            if (f.endsWith(`_${keepSuffix}`)) continue;
+            if (f.endsWith("_arm64") || f.endsWith("_x64")) {
+              fs.unlinkSync(path.join(cuaNodeSkyBin, f));
+              console.log(`   [linux] removed mismatched arch binary: ${f}`);
+            }
+          }
+        }
+        // Clean up .bin/ symlinks
+        const cuaNodeBin = path.join(resourcesPath, "cua_node", "lib", "node_modules", ".bin");
+        if (fs.existsSync(cuaNodeBin)) {
+          for (const f of fs.readdirSync(cuaNodeBin)) {
+            if (f.startsWith("sky_linux_")) {
+              const full = path.join(cuaNodeBin, f);
+              try {
+                if (fs.lstatSync(full).isSymbolicLink()) {
+                  fs.unlinkSync(full);
+                  console.log(`   [linux] removed sky symlink: ${f}`);
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+
       console.log(`   [ok] ${copied} files (app.asar + unpacked + resources)`);
     },
   },

@@ -83,7 +83,6 @@ function main() {
   }
 
   const isLinux = platform.startsWith("linux");
-  const arch = isLinux ? (platform === "linux-arm64" ? "arm64" : "x64") : null;
   const sourceDir = isLinux
     ? path.join(SRC, "mac-x64")
     : path.join(SRC, platform);
@@ -143,34 +142,6 @@ function main() {
     if (fs.existsSync(unpackedDir)) {
       const n = copyRecursive(unpackedDir, path.join(SRC, "app.asar.unpacked"));
       console.log(`   [linux] app.asar.unpacked/ -> src/ (${n} files)`);
-    }
-
-    // Filter architecture-specific binaries in cua_node/@oai/sky/bin/linux/
-    const skyBinDir = path.join(SRC, "cua_node", "lib", "node_modules", "@oai", "sky", "bin", "linux");
-    if (fs.existsSync(skyBinDir)) {
-      const keepSuffix = arch === "arm64" ? "arm64" : "x64";
-      for (const f of fs.readdirSync(skyBinDir)) {
-        if (f.endsWith(`_${keepSuffix}`)) continue;
-        if (f.endsWith("_arm64") || f.endsWith("_x64")) {
-          fs.unlinkSync(path.join(skyBinDir, f));
-          console.log(`   [linux] removed mismatched arch binary: ${f}`);
-        }
-      }
-    }
-    // Clean up .bin/ symlinks for sky_linux_*
-    const binDir = path.join(SRC, "cua_node", "lib", "node_modules", ".bin");
-    if (fs.existsSync(binDir)) {
-      for (const f of fs.readdirSync(binDir)) {
-        if (f.startsWith("sky_linux_")) {
-          const full = path.join(binDir, f);
-          try {
-            if (fs.lstatSync(full).isSymbolicLink()) {
-              fs.unlinkSync(full);
-              console.log(`   [linux] removed sky symlink: ${f}`);
-            }
-          } catch {}
-        }
-      }
     }
   }
 
