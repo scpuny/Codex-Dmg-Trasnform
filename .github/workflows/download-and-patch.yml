@@ -205,7 +205,7 @@ jobs:
           echo "Forge make output:"
           find out/make -type f 2>/dev/null | sort
 
-      - name: 重命名 Linux 产物 (统一格式: Codex_平台_版本.包名)
+      - name: "重命名 Linux 产物 (统一格式: Codex_平台_版本.包名)"
         run: |
           VER="${{ needs.detect.outputs.version }}"
           PLATFORM="linux-${{ matrix.arch }}"
