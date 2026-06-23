@@ -15,22 +15,41 @@ const path = require("path");
 const { SRC_DIR, relPath } = require("./patch-util");
 
 const TARGET_PATTERN = /^workspace-root-drop-handler-.*\.js$/;
-const SEARCH = 'throw Error(`Owl feature binding is unavailable`)';
-const REPLACE = 'return Ge.parse({isOwlFeatureEnabled:()=>!1})';
+const SEARCH_PATTERNS = [
+  // Case 1: throw Error when _linkedBinding is not a function
+  {
+    from: 'throw Error(`Owl feature binding is unavailable`)',
+    to: 'return Ge.parse({isOwlFeatureEnabled:()=>!1})',
+  },
+  // Case 2: _linkedBinding exists but doesn't have the custom binding
+  // Replace the entire return call to avoid "No such binding was linked"
+  {
+    from: 'return Ge.parse(e.call(process,`electron_common_owl_features`))',
+    to: 'return Ge.parse({isOwlFeatureEnabled:()=>!1})',
+  },
+];
 
 let patchedCount = 0;
 
 function patchFile(filePath) {
-  const original = fs.readFileSync(filePath, "utf-8");
-  if (!original.includes("electron_common_owl_features")) return;
+  let content = fs.readFileSync(filePath, "utf-8");
+  if (!content.includes("electron_common_owl_features")) return;
 
-  const updated = original.replace(SEARCH, REPLACE);
-  if (updated === original) {
-    console.log(`   [!] ${relPath(filePath)}: pattern not found`);
+  let modified = false;
+  for (const { from, to } of SEARCH_PATTERNS) {
+    if (content.includes(from)) {
+      content = content.replace(from, to);
+      modified = true;
+      console.log(`   [apply] ${relPath(filePath)}: ${from.substring(0,50)}...`);
+    }
+  }
+
+  if (!modified) {
+    console.log(`   [!] ${relPath(filePath)}: no pattern matched`);
     return;
   }
 
-  fs.writeFileSync(filePath, updated, "utf-8");
+  fs.writeFileSync(filePath, content, "utf-8");
   patchedCount++;
   console.log(`   [ok] ${relPath(filePath)}: owl_features binding fallback`);
 }
