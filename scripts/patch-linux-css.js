@@ -28,9 +28,9 @@ const CSS_BLOCK = `
   --color-background-elevated-secondary: #f5f5f5;
   --color-background-elevated-secondary-opaque: #f5f5f5;
   --color-token-main-surface-primary: var(--color-background-surface);
-  --color-token-side-bar-background: var(--color-background-surface);
-  --color-token-bg-primary: var(--color-background-surface);
-  --color-token-bg-secondary: var(--color-background-surface);
+  --color-token-side-bar-background: #fcfcfc;
+  --color-token-bg-primary: var(--color-token-side-bar-background);
+  --color-token-bg-secondary: var(--color-token-side-bar-background);
   --color-token-bg-tertiary: rgba(0, 0, 0, 0.03);
   --color-token-foreground: rgba(13, 13, 13, 1);
   --color-token-text-primary: rgba(13, 13, 13, 1);
@@ -49,15 +49,15 @@ const CSS_BLOCK = `
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-background-surface: #1a1a1a;
-    --color-background-elevated-primary: #1a1a1a;
-    --color-background-elevated-primary-opaque: #1a1a1a;
+    --color-background-surface: #111111;
+    --color-background-elevated-primary: #111111;
+    --color-background-elevated-primary-opaque: #111111;
     --color-background-elevated-secondary: #252525;
     --color-background-elevated-secondary-opaque: #252525;
     --color-token-main-surface-primary: var(--color-background-surface);
-    --color-token-side-bar-background: var(--color-background-surface);
-    --color-token-bg-primary: var(--color-background-surface);
-    --color-token-bg-secondary: var(--color-background-surface);
+    --color-token-side-bar-background: #131313;
+    --color-token-bg-primary: var(--color-token-side-bar-background);
+    --color-token-bg-secondary: var(--color-token-side-bar-background);
     --color-token-bg-tertiary: rgba(255, 255, 255, 0.03);
     --color-token-foreground: rgba(235, 235, 235, 1);
     --color-token-text-primary: rgba(235, 235, 235, 1);
