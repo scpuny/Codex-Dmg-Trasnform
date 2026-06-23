@@ -15,8 +15,13 @@
  *    - getUIScaleFactor, getSystemAppearance, initRenderer
  *
  * 2. Also handles the case where a previous minimal patch already removed
- *    the binding call but left a sparse mock ({isOwlFeatureEnabled:()=>!1})
- *    by expanding it with the full UI parameter set.
+ *    the binding call but left a sparse mock ({isOwlFeatureEnabled:()=>!1}).
+ *
+ * Note: After inspecting the actual code, the OWL binding schema is only:
+ *   Ge = t.pc({isOwlFeatureEnabled: t.sc(e=>typeof e=='function')})
+ * and the ONLY method ever called is .isOwlFeatureEnabled(name).
+ * No getFeatureFlags/getSidebarConfig/etc. exist in the source.
+ * Those were AI hallucinations. The minimal mock is sufficient.
  */
 const fs = require("fs");
 const path = require("path");
@@ -24,16 +29,12 @@ const { SRC_DIR, relPath } = require("./patch-util");
 
 const TARGET_PATTERN = /^workspace-root-drop-handler-.*\.js$/;
 
-// Complete mock object literal that provides all UI/styling parameters.
-// Ge.parse() uses passthrough (.pc()), so extra fields are preserved.
-const RICH_MOCK = `({isOwlFeatureEnabled:()=>!1` +
-  `,getFeatureFlags:()=>({enableTransparentWindow:false,enableLayerBlur:false,windowRoundedCorners:8,useNativeTitlebar:false,animationLevel:1,enableSidebarShadow:true,sidebarFixedWidth:240,sidebarItemPadding:12,sidebarSeparatorVisible:true})` +
-  `,initRenderer:()=>{}` +
-  `,getWindowFlags:()=>({transparent:false,vibrancy:"none",shadow:true})` +
-  `,getUIScaleFactor:()=>1.0` +
-  `,getSystemAppearance:()=>"dark"` +
-  `,getSidebarConfig:()=>({width:240,shadowOpacity:0.12,itemBorderRadius:6,hoverBgOpacity:0.08,separatorOpacity:0.1})` +
-`})`;
+// Minimal mock — actual inspection of the source reveals the ONLY
+// method called on the binding result is .isOwlFeatureEnabled(name).
+// The binding schema is simply: Ge = t.pc({isOwlFeatureEnabled: t.sc(e=>typeof e=='function')})
+// No getFeatureFlags / getSidebarConfig / etc. exist in the codebase.
+// Extra fields in the mock would be dead code — keep it minimal.
+const MOCK_STRING = `({isOwlFeatureEnabled:()=>!1})`;
 
 // Pattern 1: Direct binding call (before any patch)
 const PATTERN_CALL = 'e.call(process,`electron_common_owl_features`)';
@@ -57,7 +58,7 @@ function patchFile(filePath) {
   // Pattern: e.call(process,`electron_common_owl_features`)
   if (content.includes(PATTERN_CALL)) {
     while (content.includes(PATTERN_CALL)) {
-      content = content.replace(PATTERN_CALL, RICH_MOCK);
+      content = content.replace(PATTERN_CALL, MOCK_STRING);
       modified = true;
     }
     console.log(`   [apply] ${relPath(filePath)}: replaced binding call with rich mock`);
@@ -66,7 +67,7 @@ function patchFile(filePath) {
   // Pattern: process._linkedBinding("electron_common_owl_features")
   if (content.includes(PATTERN_DIRECT)) {
     while (content.includes(PATTERN_DIRECT)) {
-      content = content.replace(PATTERN_DIRECT, RICH_MOCK);
+      content = content.replace(PATTERN_DIRECT, MOCK_STRING);
       modified = true;
     }
     console.log(`   [apply] ${relPath(filePath)}: replaced direct _linkedBinding call`);
@@ -74,7 +75,7 @@ function patchFile(filePath) {
 
   if (content.includes(PATTERN_DIRECT_SQ)) {
     while (content.includes(PATTERN_DIRECT_SQ)) {
-      content = content.replace(PATTERN_DIRECT_SQ, RICH_MOCK);
+      content = content.replace(PATTERN_DIRECT_SQ, MOCK_STRING);
       modified = true;
     }
     console.log(`   [apply] ${relPath(filePath)}: replaced direct _linkedBinding call (sq)`);
@@ -82,10 +83,10 @@ function patchFile(filePath) {
 
   // Method 2: Expand already-minimally-patched sparse mock to rich mock
   // Pattern: Ge.parse({isOwlFeatureEnabled:()=>!1}) 
-  //          → Ge.parse(RICH_MOCK)
+  //          → Ge.parse(MOCK_STRING)
   if (content.includes(PATTERN_SPARSE)) {
     while (content.includes(PATTERN_SPARSE)) {
-      content = content.replace(PATTERN_SPARSE, `Ge.parse(${RICH_MOCK})`);
+      content = content.replace(PATTERN_SPARSE, `Ge.parse(${MOCK_STRING})`);
       modified = true;
     }
     console.log(`   [apply] ${relPath(filePath)}: expanded sparse mock to rich mock`);
