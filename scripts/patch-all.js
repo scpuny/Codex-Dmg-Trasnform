@@ -21,6 +21,7 @@ const PATCHES = [
   "patch-archive-delete.js",
   "patch-owl-features.js",
   "patch-fonts.js",
+  "patch-linux-css.js",
 ];
 
 function main() {
