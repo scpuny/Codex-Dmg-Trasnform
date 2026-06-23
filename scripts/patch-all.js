@@ -20,6 +20,7 @@ const PATCHES = [
   "patch-updater.js",
   "patch-archive-delete.js",
   "patch-owl-features.js",
+  "patch-fonts.js",
 ];
 
 function main() {
