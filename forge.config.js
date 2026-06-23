@@ -110,18 +110,6 @@ module.exports = {
         [FuseV1Options.OnlyLoadAppFromAsar]: false,
       },
     },
-    // 新增Webpack插件，屏蔽macOS专属owl绑定导入（兜底修复）
-    {
-      name: "@electron-forge/plugin-webpack",
-      config: {
-        mainConfig: {
-          externals: {
-            // Linux下强制忽略该mac专属原生模块导入
-            "electron_common_owl_features": "commonjs electron_common_owl_features"
-          }
-        }
-      }
-    }
   ],
   hooks: {
     packageAfterCopy: async (config, buildPath, electronVersion, platform, arch) => {
