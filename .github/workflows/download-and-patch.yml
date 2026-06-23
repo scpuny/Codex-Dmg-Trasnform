@@ -168,7 +168,7 @@ jobs:
           curl -fSLk --connect-timeout 30 --max-time 1800 --retry 3 "$URL" -o "codex-x64.zip"
           echo "Downloaded: $(du -h codex-x64.zip | cut -f1)"
 
-      - name: 提取 _asar/ 到 src/mac-x64/
+      - name: 提取 _asar/ 到 src/mac-x64/【修复点：彻底删除app.asar.unpacked，过滤.node】
         run: |
           mkdir -p tmp-extract
           7z x -y "codex-x64.zip" -o"tmp-extract" 2>/dev/null
@@ -176,12 +176,14 @@ jobs:
           [ -z "$APP_PATH" ] && { echo "Codex.app not found"; exit 1; }
           mkdir -p src/mac-x64
           npx asar extract "$APP_PATH/Contents/Resources/app.asar" "src/mac-x64/_asar"
-          if [ -d "$APP_PATH/Contents/Resources/app.asar.unpacked" ]; then
-            cp -a "$APP_PATH/Contents/Resources/app.asar.unpacked" "src/mac-x64/app.asar.unpacked"
-          fi
-          for e in codex rg plugins native cua_node icon.png icon_512x512.png; do
-            [ -e "$APP_PATH/Contents/Resources/$e" ] && \
-              cp -a "$APP_PATH/Contents/Resources/$e" "src/mac-x64/$e" 2>/dev/null || true
+          # 关键修复：删除macOS专属原生二进制目录，不进入源码
+          rm -rf "$APP_PATH/Contents/Resources/app.asar.unpacked"
+          # 仅复制非.node资源
+          for e in codex rg plugins cua_node icon.png icon_512x512.png; do
+            FILE_PATH="$APP_PATH/Contents/Resources/$e"
+            if [ -e "$FILE_PATH" ] && [[ "$e" != *.node ]]; then
+              cp -a "$FILE_PATH" "src/mac-x64/$e" 2>/dev/null || true
+            fi
           done
           rm -rf tmp-extract codex-x64.zip
 
@@ -190,6 +192,14 @@ jobs:
 
       - name: 准备 Linux 构建环境 (prepare-src)
         run: node scripts/prepare-src.js --platform linux-${{ matrix.arch }}
+
+      - name: 清理全部旧原生模块缓存【新增修复步骤】
+        run: |
+          rm -rf node_modules/.cache
+          rm -rf electron_builder_cache
+          rm -rf dist
+          rm -rf .electron_rebuild_cache
+          find src -name "*.node" -delete
 
       - name: 重建 native modules (electron-rebuild)
         run: npm run rebuild:native
@@ -234,7 +244,7 @@ jobs:
 
       - name: 上传 Linux 产物
         uses: actions/upload-artifact@v4
-        with:
+        with
           name: Codex-linux-${{ matrix.arch }}-${{ needs.detect.outputs.version }}
           path: |
             out/make/**/*.deb

@@ -13,10 +13,19 @@ module.exports = {
     // "linux": forge packs ASAR from src/ content (needs electron-rebuild).
     asar: (() => {
       try {
-        return fs.readFileSync(path.join(__dirname, "src", ".build-mode"), "utf-8").trim() === "upstream-asar"
-          ? false
-          : { unpack: "{**/*.node,**/node-pty/build/Release/spawn-helper,**/node-pty/prebuilds/*/spawn-helper}" };
-      } catch { return false; }
+        const mode = fs.readFileSync(path.join(__dirname, "src", ".build-mode"), "utf-8").trim();
+        if (mode === "upstream-asar") {
+          // macOS 预打包asar，完全关闭forge打包
+          return false;
+        } else {
+          // Linux：禁止自动解压所有.node，只保留少量非图形辅助二进制
+          return {
+            unpack: "{**/node-pty/build/Release/spawn-helper,**/node-pty/prebuilds/*/spawn-helper}"
+          };
+        }
+      } catch {
+        return false;
+      }
     })(),
     ignore: (() => {
       let mode = "upstream-asar";
@@ -56,11 +65,35 @@ module.exports = {
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     {
       name: "@electron-forge/maker-deb",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", maintainer: "OpenAI", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png", desktopTemplate: path.join(__dirname, "resources", "codex.desktop"), scripts: { postinst: path.join(__dirname, "resources", "deb-scripts", "postinst") } } },
+      config: {
+        options: {
+          name: "codex",
+          productName: "Codex",
+          genericName: "AI Coding Assistant",
+          categories: ["Development", "Utility"],
+          bin: "Codex",
+          maintainer: "OpenAI",
+          homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform",
+          icon: "./resources/electron.png",
+          desktopTemplate: path.join(__dirname, "resources", "codex.desktop"),
+          scripts: { postinst: path.join(__dirname, "resources", "deb-scripts", "postinst") }
+        }
+      },
     },
     {
       name: "@electron-forge/maker-rpm",
-      config: { options: { name: "codex", productName: "Codex", genericName: "AI Coding Assistant", categories: ["Development", "Utility"], bin: "Codex", license: "Apache-2.0", homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform", icon: "./resources/electron.png" } },
+      config: {
+        options: {
+          name: "codex",
+          productName: "Codex",
+          genericName: "AI Coding Assistant",
+          categories: ["Development", "Utility"],
+          bin: "Codex",
+          license: "Apache-2.0",
+          homepage: "https://github.com/scpuny/Codex-Dmg-Trasnform",
+          icon: "./resources/electron.png"
+        }
+      },
     },
     { name: "@electron-forge/maker-zip", platforms: ["linux"] },
   ],
@@ -77,6 +110,18 @@ module.exports = {
         [FuseV1Options.OnlyLoadAppFromAsar]: false,
       },
     },
+    // 新增Webpack插件，屏蔽macOS专属owl绑定导入（兜底修复）
+    {
+      name: "@electron-forge/plugin-webpack",
+      config: {
+        mainConfig: {
+          externals: {
+            // Linux下强制忽略该mac专属原生模块导入
+            "electron_common_owl_features": "commonjs electron_common_owl_features"
+          }
+        }
+      }
+    }
   ],
   hooks: {
     packageAfterCopy: async (config, buildPath, electronVersion, platform, arch) => {
@@ -116,12 +161,23 @@ module.exports = {
       }
       let copied = 0;
 
+      /**
+       * 递归复制目录，Linux环境自动删除所有 .node 原生模块
+       */
       const copyDir = (s, d) => {
         fs.mkdirSync(d, { recursive: true });
         for (const e of fs.readdirSync(s, { withFileTypes: true })) {
           const sp = path.join(s, e.name), dp = path.join(d, e.name);
+          // Linux 直接跳过所有 .node 文件，杜绝owl绑定
+          if (isLinux && e.isFile() && path.extname(e.name) === ".node") {
+            console.log(`   [linux-clean] skip mac native binding: ${e.name}`);
+            continue;
+          }
           if (e.isDirectory()) copyDir(sp, dp);
-          else if (!e.isSymbolicLink()) { fs.copyFileSync(sp, dp); copied++; }
+          else if (!e.isSymbolicLink()) {
+            fs.copyFileSync(sp, dp);
+            copied++;
+          }
         }
       };
 
@@ -135,6 +191,11 @@ module.exports = {
         if (entry.isDirectory()) {
           copyDir(srcPath, destPath);
         } else if (!entry.isSymbolicLink()) {
+          // 再次拦截顶层.node文件
+          if (isLinux && path.extname(entry.name) === ".node") {
+            console.log(`   [linux-clean] skip top-level mac native binding: ${entry.name}`);
+            continue;
+          }
           fs.copyFileSync(srcPath, destPath);
           try { fs.chmodSync(destPath, 0o755); } catch {}
           copied++;
@@ -182,7 +243,7 @@ exec "$HERE/Codex" --no-sandbox "$@"
         }
       }
 
-      console.log(`   [ok] ${copied} files (app.asar + unpacked + resources)`);
+      console.log(`   [ok] ${copied} files (已过滤macOS .node原生绑定模块)`);
     },
   },
 };

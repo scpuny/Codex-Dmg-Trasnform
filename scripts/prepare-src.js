@@ -2,11 +2,12 @@
 /**
  * prepare-src.js — Pre-build: Repack patched ASAR, assemble src/ for forge build
  *
- * For macOS: repacks _asar/ → app.asar in src/{platform}/, replaces codex CLI.
+ * For macOS: repacks _asar/ → app.asar, replaces codex CLI.
  * For Linux: repacks, strips macOS-only resources, copies to flat src/ for forge.
+ * 修复：Linux递归过滤所有.node原生模块，杜绝macOS electron_common_owl_features绑定流入
  *
  * The forge build flow for Linux is:
- *   1. prepare-src.js → repacks _asar/ → app.asar, copies content to flat src/
+ *   1. prepare-src.js → repacks _asar/ → app.asar, copies content to flat src/ (剔除所有.node)
  *   2. electron-rebuild → rebuilds native modules in node_modules/
  *   3. sync-native-modules.js → copies rebuilt modules to src/node_modules/
  *   4. electron-forge make → packages into .deb/.rpm/.zip
@@ -36,6 +37,9 @@ const MACOS_STRIP = new Set([
 ]);
 const MACOS_STRIP_DIRS = new Set(["native"]);
 
+/**
+ * 原版复制函数：macOS专用，无过滤
+ */
 function copyRecursive(src, dest, skipFiles, skipDirs) {
   fs.mkdirSync(dest, { recursive: true });
   let count = 0;
@@ -46,6 +50,37 @@ function copyRecursive(src, dest, skipFiles, skipDirs) {
     if (e.isDirectory()) { count += copyRecursive(s, d, skipFiles, skipDirs); }
     else if (e.isSymbolicLink()) { /* skip symlinks */ }
     else { fs.copyFileSync(s, d); count++; }
+  }
+  return count;
+}
+
+/**
+ * 新增Linux专用复制函数：递归过滤全部 .node 后缀文件
+ */
+function copyRecursiveLinuxClean(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  let count = 0;
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    // 直接跳过所有 .node 原生绑定文件
+    if (entry.isFile() && path.extname(entry.name) === ".node") {
+      continue;
+    }
+    // 跳过macOS专属目录
+    if (entry.isDirectory() && MACOS_STRIP_DIRS.has(entry.name)) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      count += copyRecursiveLinuxClean(srcPath, destPath);
+    } else {
+      // 跳过macOS专属资源文件
+      if (!MACOS_STRIP.has(entry.name)) {
+        fs.copyFileSync(srcPath, destPath);
+        count++;
+      }
+    }
   }
   return count;
 }
@@ -121,7 +156,7 @@ function main() {
 
   const VALID = ["mac-x64", "linux-x64", "linux-arm64"];
   if (!platform || !VALID.includes(platform)) {
-    console.error(`[x] Usage: prepare-src.js --platform <${VALID.join("|")}>`);
+    console.error(`[x] Usage: node scripts/prepare-src.js --platform <${VALID.join("|")}>`);
     process.exit(1);
   }
 
@@ -175,14 +210,9 @@ function main() {
     }
   }
 
-  // 3. For Linux: copy _asar/ content to flat src/ (forge packs ASAR from src/)
-  //    Skip node_modules/ — upstream has macOS .node binaries.
-  //    Native modules are rebuilt by electron-rebuild → sync-native-modules.js
-  //    and end up in src/node_modules/. Forge's asar.unpack config unpacks
-  //    .node files to app.asar.unpacked/ automatically.
-  //    Do NOT copy mac-x64/app.asar.unpacked/ — it contains Mach-O .node files.
+  // 3. Linux分支：使用清理版复制函数，递归删除全部.node文件
   if (isLinux) {
-    // Clear flat src/ dirs
+    // 清空根目录src所有旧文件
     for (const d of [".vite", "webview", "skills", "native-menu-locales", "node_modules"]) {
       const p = path.join(SRC, d);
       if (fs.existsSync(p)) fs.rmSync(p, { recursive: true });
@@ -191,10 +221,9 @@ function main() {
       const p = path.join(SRC, f);
       if (fs.statSync(p).isFile()) fs.unlinkSync(p);
     }
-    // Copy everything except node_modules (macOS .node binaries)
-    const skipDirs = new Set(["node_modules"]);
-    const count = copyRecursive(asarContentDir, SRC, null, skipDirs);
-    console.log(`   [linux] _asar/ -> src/ (${count} files, skipped node_modules/)`);
+    // 调用专用清理复制函数，自动过滤.node和macOS专属资源
+    const count = copyRecursiveLinuxClean(asarContentDir, SRC);
+    console.log(`   [linux] _asar/ -> src/ (${count} files, 已过滤全部 .node 原生模块与macOS专属资源)`);
   }
 
   // 4. Sync version to root package.json
@@ -216,8 +245,7 @@ function main() {
     console.log(`   version: ${oldVer} -> ${rootPkg.version}`);
   }
 
-  // For macOS (upstream-asar mode): create stub for forge validation.
-  // For Linux: the real bootstrap.js from _asar/ is already in src/ — keep it.
+  // macOS 生成stub，Linux直接使用asar内源码
   if (!isLinux) {
     const stubDir = path.join(SRC, ".vite", "build");
     fs.mkdirSync(stubDir, { recursive: true });
@@ -233,7 +261,7 @@ function main() {
   // Write build mode marker for forge.config.js
   const marker = path.join(SRC, ".build-mode");
   fs.writeFileSync(marker, isLinux ? "linux" : "upstream-asar");
-  console.log(`   [mode] ${isLinux ? "linux (forge packs ASAR)" : "upstream-asar (pre-built)"}`);
+  console.log(`   [mode] ${isLinux ? "linux (forge packs ASAR,无mac原生.node)" : "upstream-asar (pre-built)"}`);
 
   console.log(`   [ok] src/ ready for ${platform} build`);
 }
