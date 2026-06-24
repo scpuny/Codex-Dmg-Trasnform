@@ -22,6 +22,7 @@ const PATCHES = [
   "patch-owl-features.js",
   "patch-fonts.js",
   "patch-linux-css.js",
+  "patch-linux-window.js",
 ];
 
 function main() {
