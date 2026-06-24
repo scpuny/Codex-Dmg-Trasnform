@@ -7,13 +7,11 @@
  * this results in a fully transparent window background (#00000000) causing
  * a black/empty window.
  *
- * Root cause:
- *   m5() checks `platform === "darwin" || platform === "win32"` for opaque
- *   window surfaces. Linux is excluded, so opaqueWindowSurfaceEnabled=false
- *   → backgroundColor=#00000000 (transparent).
- *
- * This patch adds Linux support to the m5() function so the window gets
- * proper opaque background colors (#f9f9f9 light / #000000 dark).
+ * Two fixes:
+ *   1. m5() opaque window surface check — add Linux to the platform list
+ *      (was darwin|win32 only, so Linux always got transparent bg)
+ *   2. B8 variable — change from transparent #00000000 to opaque #f9f9f9
+ *      (backup fix for when opaqueWindowSurfaceEnabled=false)
  */
 const fs = require("fs");
 const path = require("path");
@@ -31,22 +29,32 @@ function patchFile(filePath) {
     return false;
   }
 
+  let modified = false;
+
+  // ── Fix 1: B8 transparent → opaque ──
+  // B8 is the fallback background when opaqueWindowSurfaceEnabled=false.
+  // On Linux this path is taken when user settings don't enable opaque windows.
+  if (content.includes("B8=`#00000000`")) {
+    content = content.replace("B8=`#00000000`", "B8=`#f9f9f9`");
+    modified = true;
+    console.log(`   [B8] ${relPath(filePath)}: #00000000 -> #f9f9f9`);
+  }
+
+  // ── Fix 2: m5() platform check ──
   // Parse AST to find the m5 function
   let ast;
   try {
     ast = acorn.parse(content, { ecmaVersion: 2022, sourceType: "script" });
   } catch (e) {
-    console.log(`   [!] ${relPath(filePath)}: parse error, trying regex fallback`);
-    // Fallback: direct string replacement
-    return patchFallback(filePath, content);
+    console.log(`   [!] ${relPath(filePath)}: parse error`);
+    // Fallback: regex replacement
+    return patchFallback(filePath, content, modified);
   }
 
-  // Walk AST to find: function m5({appearance, opaqueWindowsEnabled, platform}){...}
-  // and add ||n===`linux` to the return condition
+  // Walk AST to find: function m5({...}) and add ||n===`linux`
   let found = false;
   let targetStart = -1;
   let targetEnd = -1;
-  let insertPos = -1;
 
   function walk(node, depth = 0) {
     if (!node || typeof node !== "object" || found) return;
@@ -56,13 +64,7 @@ function patchFile(filePath) {
       node.type === "FunctionDeclaration" &&
       node.id?.name === "m5"
     ) {
-      // Found m5 function
       const body = content.slice(node.body.start, node.body.end);
-      
-      // Find the return statement with the platform check
-      // Pattern: n===`darwin`||n===`win32`
-      // We need to replace it with: n===`darwin`||n===`win32`||n===`linux`
-      
       const returnMatch = body.match(/n===`darwin`\|\|n===`win32`/);
       if (returnMatch) {
         const absPos = node.body.start + returnMatch.index;
@@ -70,7 +72,7 @@ function patchFile(filePath) {
         targetStart = absPos;
         targetEnd = absPos + returnMatch[0].length;
       }
-      return; // Found the function, stop walking
+      return;
     }
 
     for (const key of Object.keys(node)) {
@@ -83,51 +85,55 @@ function patchFile(filePath) {
 
   walk(ast);
 
-  if (!found) {
+  if (found) {
+    const before = content.slice(0, targetStart);
+    const after = content.slice(targetEnd);
+    content = before + "n===`darwin`||n===`win32`||n===`linux`" + after;
+    modified = true;
+    console.log(`   [m5] ${relPath(filePath)}: added Linux to opaque window check`);
+  } else {
     console.log(`   [!] ${relPath(filePath)}: m5() not found via AST`);
-    return patchFallback(filePath, content);
   }
 
-  // Apply the patch
-  const before = content.slice(0, targetStart);
-  const after = content.slice(targetEnd);
-  const newContent = before + "n===`darwin`||n===`win32`||n===`linux`" + after;
-
-  // Check for sanity
-  if (!newContent.includes("n===`darwin`||n===`win32`||n===`linux`")) {
-    console.log(`   [!] ${relPath(filePath)}: sanity check failed`);
-    return patchFallback(filePath, content);
+  if (!modified) {
+    console.log(`   [!!] ${relPath(filePath)}: nothing to patch`);
+    return false;
   }
 
   const patchMarker = "\n/* patch-linux-window: opaque window bg for Linux */";
-  fs.writeFileSync(filePath, newContent + patchMarker, "utf-8");
-  console.log(`   [ok] ${relPath(filePath)}: added Linux opaque window support`);
+  fs.writeFileSync(filePath, content + patchMarker, "utf-8");
+  console.log(`   [ok] ${relPath(filePath)}: patched`);
   return true;
 }
 
-function patchFallback(filePath, content) {
-  // Regex fallback: find `n===`darwin`||n===`win32`` in context of m5 function
-  const pattern = /(n===`darwin`\|\|n===`win32`)/;
-  const match = content.match(pattern);
-  
-  if (!match) {
-    console.log(`   [!] ${relPath(filePath)}: regex fallback also failed`);
-    return false;
+function patchFallback(filePath, content, alreadyModified) {
+  let result = content;
+  let modified = alreadyModified || false;
+
+  // Fix 1: B8 transparent → opaque
+  if (result.includes("B8=`#00000000`")) {
+    result = result.replace("B8=`#00000000`", "B8=`#f9f9f9`");
+    modified = true;
+    console.log(`   [B8] ${relPath(filePath)}: #00000000 -> #f9f9f9 [fallback]`);
   }
 
-  const newContent = content.replace(
-    pattern,
-    "n===`darwin`||n===`win32`||n===`linux`"
-  );
+  // Fix 2: m5 platform check
+  const pattern = /(n===`darwin`\|\|n===`win32`)/;
+  const match = result.match(pattern);
+  if (match) {
+    result = result.replace(pattern, "n===`darwin`||n===`win32`||n===`linux`");
+    modified = true;
+    console.log(`   [m5] ${relPath(filePath)}: added Linux [fallback]`);
+  }
 
-  if (!newContent.includes("n===`darwin`||n===`win32`||n===`linux`")) {
-    console.log(`   [!] ${relPath(filePath)}: regex fallback sanity check failed`);
+  if (!modified) {
+    console.log(`   [!!] ${relPath(filePath)}: fallback also failed`);
     return false;
   }
 
   const patchMarker = "\n/* patch-linux-window: opaque window bg for Linux */";
-  fs.writeFileSync(filePath, newContent + patchMarker, "utf-8");
-  console.log(`   [ok] ${relPath(filePath)}: [fallback] added Linux opaque window support`);
+  fs.writeFileSync(filePath, result + patchMarker, "utf-8");
+  console.log(`   [ok] ${relPath(filePath)}: patched [fallback]`);
   return true;
 }
 
