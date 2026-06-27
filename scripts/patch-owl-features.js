@@ -103,6 +103,12 @@ function patchFile(filePath) {
 }
 
 function main() {
+  const args2 = process.argv.slice(2);
+  const plat2 = args2.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
+  if (plat2 === "mac-arm64" || plat2 === "mac-x64") {
+    console.log("  [skip] this patch only applies to Linux builds");
+    return;
+  }
   const platform = process.argv[2];
   const validPlatforms = ["mac-arm64", "mac-x64", "win"];
 
