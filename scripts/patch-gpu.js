@@ -58,7 +58,7 @@ function verifyElectronBootstrap(code) {
 function main() {
   const args = process.argv.slice(2);
   const platform = args.find((a) =>
-    ["mac-arm64", "mac-x64", "win"].includes(a),
+    ["mac-arm64", "mac-x64", "win", "unix"].includes(a),
   );
 
   if (platform && platform !== "mac-x64") {

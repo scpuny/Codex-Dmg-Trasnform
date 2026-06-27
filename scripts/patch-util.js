@@ -35,8 +35,10 @@ function locateBundles({ dir, pattern, platform }) {
   if (!getDir) throw new Error(`Unknown dir type: ${dir}`);
 
   const ALL_PLATFORMS = ["mac-arm64", "mac-x64", "win"];
-  const platforms = platform
-    ? [platform]
+const PLATFORM_ALIAS = { unix: "mac-x64", linux: "mac-x64" };
+  const resolvedPlatform = PLATFORM_ALIAS[platform] || platform;
+  const platforms = resolvedPlatform
+    ? [resolvedPlatform]
     : ALL_PLATFORMS.filter((p) => fs.existsSync(getDir(p)));
 
   // Legacy fallback

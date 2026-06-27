@@ -129,18 +129,17 @@ function patchFallback(filePath, content, alreadyModified) {
 
 function main() {
   const args = process.argv.slice(2);
-  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
+  const rawPlatform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
 
   // macOS 不需要此修补，跳过
-  if (platform === "mac-arm64" || platform === "mac-x64") {
+  if (rawPlatform === "mac-arm64" || rawPlatform === "mac-x64") {
     console.log("  [skip] linux-window patch: not applicable to macOS");
     return;
   }
 
-  const validPlatforms = ["mac-arm64", "mac-x64", "win"];
-  const platforms = platform
-    ? (validPlatforms.includes(platform) ? [platform] : validPlatforms)
-    : validPlatforms;
+  // 'unix' 使用 mac-x64 目录中的 ASAR 内容
+  const targetPlatform = rawPlatform === "unix" ? "mac-x64" : rawPlatform;
+  const platforms = targetPlatform ? [targetPlatform] : ["mac-arm64", "mac-x64", "win"];
 
   console.log("\n== patch-linux-window ==");
 

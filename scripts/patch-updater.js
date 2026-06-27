@@ -71,7 +71,7 @@ function collectPatches(ast, source) {
 function locateTargets(platform) {
   const platforms = platform
     ? [platform]
-    : ["mac-arm64", "mac-x64", "win"].filter((p) =>
+    : ["mac-arm64", "mac-x64", "win", "unix"].filter((p) =>
         fs.existsSync(path.join(SRC_DIR, p, "_asar", ".vite", "build")),
       );
 
@@ -96,7 +96,7 @@ function locateTargets(platform) {
 
 function main() {
   const args = process.argv.slice(2);
-  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win"].includes(a));
+  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
 
   const targets = locateTargets(platform);
   if (targets.length === 0) {

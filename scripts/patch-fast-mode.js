@@ -77,12 +77,12 @@ function main() {
   const args = process.argv.slice(2);
   const isCheck = args.includes("--check");
   const platform = args.find((a) =>
-    ["mac-arm64", "mac-x64", "win"].includes(a),
+    ["mac-arm64", "mac-x64", "win", "unix"].includes(a),
   );
 
   const platforms = platform
     ? [platform]
-    : ["mac-arm64", "mac-x64", "win"].filter((p) =>
+    : ["mac-arm64", "mac-x64", "win", "unix"].filter((p) =>
         fs.existsSync(path.join(SRC_DIR, p, "_asar", "webview", "assets")),
       );
 

@@ -188,7 +188,7 @@ jobs:
           rm -rf tmp-extract codex-x64.zip
 
       - name: 打补丁 (AST-based)
-        run: node scripts/patch-all.js mac-x64
+        run: node scripts/patch-all.js unix
 
       - name: 准备 Linux 构建环境 (prepare-src)
         run: node scripts/prepare-src.js --platform linux-${{ matrix.arch }}
@@ -258,7 +258,7 @@ jobs:
   # 只依赖 detect + macOS，Linux 产物可选（有就包含）
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64, build-linux]
+    needs: [detect, build-macos-x64]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:

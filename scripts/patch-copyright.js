@@ -94,7 +94,7 @@ function collectPatches(ast, source) {
 function main() {
   const args = process.argv.slice(2);
   const isCheck = args.includes("--check");
-  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win"].includes(a));
+  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
 
   const bundles = locateBundles({
     dir: "build",

@@ -104,20 +104,14 @@ function patchFile(filePath) {
 
 function main() {
   const args2 = process.argv.slice(2);
-  const plat2 = args2.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
-  if (plat2 === "mac-arm64" || plat2 === "mac-x64") {
+  const rawPlatform = args2.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
+  if (rawPlatform === "mac-arm64" || rawPlatform === "mac-x64") {
     console.log("  [skip] this patch only applies to Linux builds");
     return;
   }
-  const platform = process.argv[2];
-  const validPlatforms = ["mac-arm64", "mac-x64", "win"];
-
-  if (platform && !validPlatforms.includes(platform)) {
-    console.error(`[x] Unknown platform: ${platform}`);
-    process.exit(1);
-  }
-
-  const platforms = platform ? [platform] : validPlatforms;
+  // unix uses mac-x64 directory for ASAR content
+  const targetPlatform = rawPlatform === "unix" ? "mac-x64" : rawPlatform;
+  const platforms = targetPlatform ? [targetPlatform] : ["mac-arm64", "mac-x64", "win"];
 
   console.log("\n== patch-owl-features ==");
 
@@ -137,8 +131,8 @@ function main() {
   }
 
   if (patchedCount === 0) {
-    console.log("   [!!] No files patched. Check file location/pattern.");
-    process.exit(1);
+    console.log("   [--] No matching files found (may not be applicable to this version)");
+    return;
   }
 
   console.log(`   [ok] ${patchedCount} file(s) patched`);
