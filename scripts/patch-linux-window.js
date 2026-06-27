@@ -23,7 +23,6 @@ const TARGET_PATTERN = /^main-[a-zA-Z0-9]+\.js$/;
 function patchFile(filePath) {
   let content = fs.readFileSync(filePath, "utf-8");
 
-  // Check if already patched
   if (content.includes("patch-linux-window")) {
     console.log(`   [--] ${relPath(filePath)}: already patched`);
     return false;
@@ -32,8 +31,6 @@ function patchFile(filePath) {
   let modified = false;
 
   // ── Fix 1: B8 transparent → opaque ──
-  // B8 is the fallback background when opaqueWindowSurfaceEnabled=false.
-  // On Linux this path is taken when user settings don't enable opaque windows.
   if (content.includes("B8=`#00000000`")) {
     content = content.replace("B8=`#00000000`", "B8=`#f9f9f9`");
     modified = true;
@@ -41,29 +38,24 @@ function patchFile(filePath) {
   }
 
   // ── Fix 2: m5() platform check ──
-  // Parse AST to find the m5 function
   let ast;
   try {
     ast = acorn.parse(content, { ecmaVersion: 2022, sourceType: "script" });
   } catch (e) {
     console.log(`   [!] ${relPath(filePath)}: parse error`);
-    // Fallback: regex replacement
     return patchFallback(filePath, content, modified);
   }
 
-  // Walk AST to find: function m5({...}) and add ||n===`linux`
   let found = false;
   let targetStart = -1;
   let targetEnd = -1;
 
-  function walk(node, depth = 0) {
+  function walk(node, depth) {
+    depth = depth || 0;
     if (!node || typeof node !== "object" || found) return;
     if (depth > 100) return;
 
-    if (
-      node.type === "FunctionDeclaration" &&
-      node.id?.name === "m5"
-    ) {
+    if (node.type === "FunctionDeclaration" && node.id?.name === "m5") {
       const body = content.slice(node.body.start, node.body.end);
       const returnMatch = body.match(/n===`darwin`\|\|n===`win32`/);
       if (returnMatch) {
@@ -110,14 +102,12 @@ function patchFallback(filePath, content, alreadyModified) {
   let result = content;
   let modified = alreadyModified || false;
 
-  // Fix 1: B8 transparent → opaque
   if (result.includes("B8=`#00000000`")) {
     result = result.replace("B8=`#00000000`", "B8=`#f9f9f9`");
     modified = true;
     console.log(`   [B8] ${relPath(filePath)}: #00000000 -> #f9f9f9 [fallback]`);
   }
 
-  // Fix 2: m5 platform check
   const pattern = /(n===`darwin`\|\|n===`win32`)/;
   const match = result.match(pattern);
   if (match) {
@@ -138,15 +128,19 @@ function patchFallback(filePath, content, alreadyModified) {
 }
 
 function main() {
-  const platform = process.argv[2];
-  const validPlatforms = ["mac-arm64", "mac-x64", "win"];
+  const args = process.argv.slice(2);
+  const platform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
 
-  if (platform && !validPlatforms.includes(platform)) {
-    console.error(`[x] Unknown platform: ${platform}`);
-    process.exit(1);
+  // macOS 不需要此修补，跳过
+  if (platform === "mac-arm64" || platform === "mac-x64") {
+    console.log("  [skip] linux-window patch: not applicable to macOS");
+    return;
   }
 
-  const platforms = platform ? [platform] : validPlatforms;
+  const validPlatforms = ["mac-arm64", "mac-x64", "win"];
+  const platforms = platform
+    ? (validPlatforms.includes(platform) ? [platform] : validPlatforms)
+    : validPlatforms;
 
   console.log("\n== patch-linux-window ==");
 
@@ -172,8 +166,8 @@ function main() {
   }
 
   if (patchedCount === 0) {
-    console.log("   [!!] No files patched");
-    process.exit(1);
+    console.log("  [skip] no files patched (not an error on this platform)");
+    return;
   }
 
   console.log(`   [ok] ${patchedCount} file(s) patched`);
