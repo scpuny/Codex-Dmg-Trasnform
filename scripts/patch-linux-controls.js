@@ -30,7 +30,7 @@ const TARGET_PATTERN = /^main-[a-zA-Z0-9_-]+\.js$/;
 
 // ─── Fix 1 & 3: Patch the main‑process bundle ────────────────────
 
-function patchMainBundle(filePath) {
+function patchMainBundle(filePath, isLinuxBuild) {
   let content = fs.readFileSync(filePath, "utf-8");
 
   if (content.includes("patch-linux-controls")) {
@@ -41,30 +41,34 @@ function patchMainBundle(filePath) {
   let modified = false;
 
   // ── Fix 1: Split win32||linux → Linux gets native title bar ──
-  // Match: n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:XXX(r)…}
-  // where XXX is any single-char-or-digit function name (minified varies per build)
-  const linuxBranchRegex =
-    /n===\x60win32\x60\|\|n===\x60linux\x60\?\{titleBarStyle:\x60hidden\x60,titleBarOverlay:(\w+)\(r\)([^}]*)\}/;
+  // Only applies to Linux builds; macOS builds keep the original joint branch.
+  if (isLinuxBuild) {
+    // Match: n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:XXX(r)…}
+    // where XXX is any single-char-or-digit function name (minified varies per build)
+    const linuxBranchRegex =
+      /n===\x60win32\x60\|\|n===\x60linux\x60\?\{titleBarStyle:\x60hidden\x60,titleBarOverlay:(\w+)\(r\)([^}]*)\}/;
 
-  const linuxBranchMatch = content.match(linuxBranchRegex);
-  if (linuxBranchMatch) {
-    const funcName = linuxBranchMatch[1];  // e.g. n5 or m9
-    const captured = linuxBranchMatch[2]; // anything after titleBarOverlay:XXX(r) before closing }
-    const oldStr = linuxBranchMatch[0];
-    const newStr =
-      'n===\x60win32\x60?{titleBarStyle:\x60hidden\x60,titleBarOverlay:' + funcName + '(r)' +
-      captured +
-      '}:n===\x60linux\x60?{titleBarStyle:\x60default\x60' +
-      captured +
-      '}';
-    content = content.replace(oldStr, newStr);
-    modified = true;
-    console.log(`   [fix1] ${relPath(filePath)}: split win32||linux → Linux uses titleBarStyle:default`);
-  } else {
-    console.log(`   [!] ${relPath(filePath)}: Linux/win32 branch not found`);
+    const linuxBranchMatch = content.match(linuxBranchRegex);
+    if (linuxBranchMatch) {
+      const funcName = linuxBranchMatch[1];  // e.g. n5 or m9
+      const captured = linuxBranchMatch[2]; // anything after titleBarOverlay:XXX(r) before closing }
+      const oldStr = linuxBranchMatch[0];
+      const newStr =
+        'n===\x60win32\x60?{titleBarStyle:\x60hidden\x60,titleBarOverlay:' + funcName + '(r)' +
+        captured +
+        '}:n===\x60linux\x60?{titleBarStyle:\x60default\x60' +
+        captured +
+        '}';
+      content = content.replace(oldStr, newStr);
+      modified = true;
+      console.log(`   [fix1] ${relPath(filePath)}: split win32||linux → Linux uses titleBarStyle:default`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: Linux/win32 branch not found`);
+    }
   }
 
   // ── Fix 3: Remove `type:"panel"` from b5() on macOS ──
+  // Relevant on both macOS and Linux builds (the pattern is in the shared bundle).
   const panelPattern = 'n===\x60darwin\x60?{type:\x60panel\x60}:{}';
   if (content.includes(panelPattern)) {
     content = content.replace(panelPattern, 'n===\x60darwin\x60?{}:{}');
@@ -155,12 +159,15 @@ function main() {
       continue;
     }
 
+    const isLinuxBuild = rawPlatform === "unix";
+
     for (const file of files) {
-      if (patchMainBundle(path.join(buildDir, file))) mainPatched++;
+      if (patchMainBundle(path.join(buildDir, file), isLinuxBuild)) mainPatched++;
     }
 
     const asarDir = path.join(SRC_DIR, plat, "_asar");
-    if (patchIndexHtml(asarDir)) htmlPatched++;
+    // Fix 2 (CSS input focus) only needed on Linux
+    if (isLinuxBuild && patchIndexHtml(asarDir)) htmlPatched++;
   }
 
   console.log(`   [done] main bundle: ${mainPatched}x, index.html: ${htmlPatched}x`);
