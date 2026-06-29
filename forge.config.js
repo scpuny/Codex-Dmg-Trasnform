@@ -224,7 +224,7 @@ module.exports = {
         if (!fs.existsSync(wrapperPath)) {
           fs.writeFileSync(wrapperPath, `#!/bin/bash
 HERE="$(cd "$(dirname "$0")" && pwd)"
-exec "$HERE/Codex"   --no-sandbox --enable-font-antialiasing   --font-render-hinting=full   "$@"
+exec "$HERE/Codex"   --no-sandbox   --enable-features=UseOzonePlatform   --ozone-platform-hint=auto   --enable-wayland-ime   --disable-gpu-rasterization   --enable-font-antialiasing   --font-render-hinting=full   "$@"
 `);
           fs.chmodSync(wrapperPath, 0o755);
           console.log(`   [wrapper] codex-wrapper created`);

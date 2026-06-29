@@ -26,6 +26,7 @@ const PATCHES = [
   "patch-fonts.js",
   "patch-linux-css.js",
   "patch-linux-window.js",
+  "patch-linux-focus.js",
 ];
 
 function main() {
