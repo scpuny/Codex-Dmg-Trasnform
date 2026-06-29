@@ -1,34 +1,26 @@
 #!/usr/bin/env node
 /**
- * patch-linux-controls.js — Fix window controls, input focus & always-on-top on Linux
+ * patch-linux-controls.js — Fix window management on Linux
  *
- * On Linux, the OEM macOS ASAR uses `titleBarStyle: "hidden"` + titleBarOverlay for
- * the primary window.  This works poorly on Linux with standard Electron:
- *   • titleBarOverlay buttons (min/max/close) often don't fire correctly,
- *   • -webkit-app-region: drag regions intercept clicks before they reach inputs,
- *   • some window managers treat "hidden"-style windows as utility/dock panels,
- *     causing the "always on top" problem.
+ * root cause: The macOS ASAR's M9() helper (frameless window factory)
+ * sets frame:!1 & skipTaskbar:!0 on every platform, including Linux.
+ * titleBarStyle is macOS-only — it's silently ignored on Linux.
  *
- * Three fixes:
- *   1. x5() primary → split the win32||linux branch
- *   2. Inject CSS into index.html for input focus
- *   3. Remove `type:"panel"` from the b5() helper on macOS
- *   4. setWindowZoom — don't call setTitleBarOverlay on Linux (titleBarStyle:default)
- *   5. installApplicationMenuTitleBarOverlaySync — don't set up overlay on Linux
- *
- * Fixes 1,2,4,5 only apply on Linux builds; fix 3 always applies.
- *
- * Usage:
- *   node scripts/patch-linux-controls.js       # applies on all platforms
- *   node scripts/patch-linux-controls.js unix   # explicit Linux build
+ * Fixes (Linux-only unless noted):
+ *   1. M9() helper → frame,fullscreenable,skipTaskbar conditional on Linux
+ *   2. N9() primary → split win32||linux branch (Linux gets default frame)
+ *   3. overlay windows → add explicit frame:!1 on Linux (they need to float)
+ *   4. hud window → remove alwaysOnTop on Linux
+ *   5. CSS → -webkit-app-region:no-drag on all focusable elements
+ *   6. setWindowZoom → remove Linux from overlay call
+ *   7. installApplicationMenuTitleBarOverlaySync → skip on Linux
+ *   8. type:"panel" removal from macOS (applies always)
  */
 const fs = require("fs");
 const path = require("path");
 const { SRC_DIR, relPath } = require("./patch-util");
 
 const TARGET_PATTERN = /^main-[a-zA-Z0-9_-]+\.js$/;
-
-// ─── Fix 1 & 3: Patch the main‑process bundle ────────────────────
 
 function patchMainBundle(filePath, isLinuxBuild) {
   let content = fs.readFileSync(filePath, "utf-8");
@@ -40,78 +32,113 @@ function patchMainBundle(filePath, isLinuxBuild) {
 
   let modified = false;
 
-  // ── Fix 1: Split win32||linux → Linux gets native title bar ──
-  // Only applies to Linux builds; macOS builds keep the original joint branch.
+  // ── Fix 1: M9() helper — framed windows on Linux ──
+  // Original (unpatched): frame:!1,...fullscreenable:!1,...skipTaskbar:!0,...{type:`panel`}:{}
+  // We need to match the pre-Fix-3 state (with type:panel) since this runs before Fix 3.
   if (isLinuxBuild) {
-    // Match: n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:XXX(r)…}
-    // where XXX is any single-char-or-digit function name (minified varies per build)
-    const linuxBranchRegex =
-      /n===\x60win32\x60\|\|n===\x60linux\x60\?\{titleBarStyle:\x60hidden\x60,titleBarOverlay:(\w+)\(r\)([^}]*)\}/;
-
-    const linuxBranchMatch = content.match(linuxBranchRegex);
-    if (linuxBranchMatch) {
-      const funcName = linuxBranchMatch[1];  // e.g. n5 or m9
-      const captured = linuxBranchMatch[2]; // anything after titleBarOverlay:XXX(r) before closing }
-      const oldStr = linuxBranchMatch[0];
-      const newStr =
-        'n===\x60win32\x60?{titleBarStyle:\x60hidden\x60,titleBarOverlay:' + funcName + '(r)' +
-        captured +
-        '}:n===\x60linux\x60?{titleBarStyle:\x60default\x60' +
-        captured +
-        '}';
-      content = content.replace(oldStr, newStr);
+    // Fresh upstream version (has type:`panel` on darwin branch)
+    const m9Orig = 'return{frame:!1,transparent:a,hasShadow:t,resizable:r,minimizable:!1,maximizable:!1,fullscreenable:!1,skipTaskbar:!0,...e?{alwaysOnTop:!0}:{},...n===`win32`?{accentColor:!1,roundedCorners:!1,thickFrame:i}:{},...n===`darwin`?{type:`panel`}:{}}';
+    const m9Repl = 'return{frame:process.platform===`linux`?!0:!1,transparent:a,hasShadow:t,resizable:r,minimizable:!1,maximizable:!1,fullscreenable:process.platform===`linux`?!0:!1,skipTaskbar:process.platform===`linux`?!1:!0,...e?{alwaysOnTop:!0}:{},...n===`win32`?{accentColor:!1,roundedCorners:!1,thickFrame:i}:{},...n===`darwin`?{type:`panel`}:{}}';
+    if (content.includes(m9Orig)) {
+      content = content.replace(m9Orig, m9Repl);
       modified = true;
-      console.log(`   [fix1] ${relPath(filePath)}: split win32||linux → Linux uses titleBarStyle:default`);
+      console.log(`   [fix1] ${relPath(filePath)}: M9() → framed windows on Linux`);
     } else {
-      console.log(`   [!] ${relPath(filePath)}: Linux/win32 branch not found`);
+      // Try already-patched-by-patch-linux-focus version (no type:panel, conditional minimizable)
+      const m9Pf1 = 'return{frame:!1,transparent:a,hasShadow:t,resizable:r,minimizable:process.platform===`darwin`?!1:!0,maximizable:process.platform===`darwin`?!1:!0,fullscreenable:!1,skipTaskbar:!0,...e?{alwaysOnTop:!0}:{},...n===`win32`?{accentColor:!1,roundedCorners:!1,thickFrame:i}:{},...n===`darwin`?{}:{}}';
+      const m9R1 = 'return{frame:process.platform===`linux`?!0:!1,transparent:a,hasShadow:t,resizable:r,minimizable:process.platform===`darwin`?!1:!0,maximizable:process.platform===`darwin`?!1:!0,fullscreenable:process.platform===`linux`?!0:!1,skipTaskbar:process.platform===`linux`?!1:!0,...e?{alwaysOnTop:!0}:{},...n===`win32`?{accentColor:!1,roundedCorners:!1,thickFrame:i}:{},...n===`darwin`?{}:{}}';
+      if (content.includes(m9Pf1)) {
+        content = content.replace(m9Pf1, m9R1);
+        modified = true;
+        console.log(`   [fix1b] ${relPath(filePath)}: M9() → framed (post-patch-linux-focus compat)`);
+      } else {
+        console.log(`   [!] ${relPath(filePath)}: M9() neither pattern matched`);
+      }
     }
   }
 
-  // ── Fix 4: setWindowZoom — don't call setTitleBarOverlay on Linux ──
+  // ── Fix 2: N9() primary — split win32||linux ──
   if (isLinuxBuild) {
-    // Remove linux from the conditional so setTitleBarOverlay is only called on win32
-    const zoomRegex =
-      /process\.platform===\x60win32\x60\|\|process\.platform===\x60linux\x60\)&&\(this\.windowZooms\.set\(n\.id,t\),n\.setTitleBarOverlay\((\w+)\(t\)\)\)/;
-    const zoomMatch = content.match(zoomRegex);
-    if (zoomMatch) {
-      const funcName = zoomMatch[1];
-      const oldStr = zoomMatch[0];
-      const newStr =
-        'process.platform===\x60win32\x60)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(' + funcName + '(t)))';
-      content = content.replace(oldStr, newStr);
-      modified = true;
-      console.log(`   [fix4] ${relPath(filePath)}: removed linux from setWindowZoom overlay call`);
-    } else {
-      console.log(`   [!] ${relPath(filePath)}: setWindowZoom overlay call not found`);
-    }
-  }
-
-  // ── Fix 5: installApplicationMenuTitleBarOverlaySync — skip on Linux ──
-  if (isLinuxBuild) {
-    // Remove linux from the guard so overlay is only installed on win32
-    const overlaySyncPattern =
-      'process.platform!==\x60win32\x60&&process.platform!==\x60linux\x60||t!==\x60primary\x60';
-    if (content.includes(overlaySyncPattern)) {
+    const primaryJoint = 'n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:m9(r)}:{titleBarStyle:`default`}';
+    if (content.includes(primaryJoint)) {
       content = content.replace(
-        overlaySyncPattern,
-        'process.platform!==\x60win32\x60||t!==\x60primary\x60'
+        primaryJoint,
+        'n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:m9(r)}:n===`linux`?{titleBarStyle:`default`}:{titleBarStyle:`default`}'
       );
       modified = true;
-      console.log(`   [fix5] ${relPath(filePath)}: removed linux from installApplicationMenuTitleBarOverlaySync guard`);
+      console.log(`   [fix2] ${relPath(filePath)}: N9() primary → Linux titleBarStyle:default`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: N9() primary joint branch not found`);
+    }
+  }
+
+  // ── Fix 3: Overlay windows — re-add frame:!1 on Linux ──
+  if (isLinuxBuild) {
+    // globalDictation
+    const gdEnd = '...n===`darwin`?{acceptFirstMouse:!0}:{}};';
+    if (content.includes(gdEnd)) {
+      content = content.replace(gdEnd, '...n===`darwin`?{acceptFirstMouse:!0}:{},...n===`linux`?{frame:!1,skipTaskbar:!0}:{}};');
+      modified = true;
+      console.log(`   [fix3a] ${relPath(filePath)}: globalDictation → re-add frame:!1 on Linux`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: globalDictation end not found`);
+    }
+
+    // avatarOverlay
+    const aoEnd = '...n===`darwin`?{enableLargerThanScreen:!0}:{},hasShadow:!1};';
+    if (content.includes(aoEnd)) {
+      content = content.replace(aoEnd, '...n===`darwin`?{enableLargerThanScreen:!0}:{},...n===`linux`?{frame:!1,skipTaskbar:!0}:{},hasShadow:!1};');
+      modified = true;
+      console.log(`   [fix3b] ${relPath(filePath)}: avatarOverlay → re-add frame:!1 on Linux`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: avatarOverlay end not found`);
+    }
+  }
+
+  // ── Fix 4: hud window — remove alwaysOnTop on Linux ──
+  if (isLinuxBuild) {
+    const hudLinux = '{titleBarStyle:`default`,minimizable:!1,maximizable:!1,fullscreenable:!1,alwaysOnTop:!0}}}';
+    if (content.includes(hudLinux)) {
+      content = content.replace(hudLinux, '{titleBarStyle:`default`,minimizable:!1,maximizable:!1,fullscreenable:!1}}}');
+      modified = true;
+      console.log(`   [fix4] ${relPath(filePath)}: hud → removed alwaysOnTop on Linux`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: hud Linux branch not found`);
+    }
+  }
+
+  // ── Fix 5: setWindowZoom — remove Linux from overlay call ──
+  if (isLinuxBuild) {
+    const zoomStr = 'process.platform===`win32`||process.platform===`linux`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(m9(t))))';
+    if (content.includes(zoomStr)) {
+      content = content.replace(zoomStr, 'process.platform===`win32`)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(m9(t))))');
+      modified = true;
+      console.log(`   [fix5] ${relPath(filePath)}: setWindowZoom → only call overlay on win32`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: setWindowZoom not found`);
+    }
+  }
+
+  // ── Fix 6: installApplicationMenuTitleBarOverlaySync — skip on Linux ──
+  if (isLinuxBuild) {
+    const guardStr = 'process.platform!==`win32`&&process.platform!==`linux`||t!==`primary`';
+    if (content.includes(guardStr)) {
+      content = content.replace(guardStr, 'process.platform!==`win32`||t!==`primary`');
+      modified = true;
+      console.log(`   [fix6] ${relPath(filePath)}: installApplicationMenuTitleBarOverlaySync → skip on Linux`);
     } else {
       console.log(`   [!] ${relPath(filePath)}: installApplicationMenuTitleBarOverlaySync guard not found`);
     }
   }
 
-  // ── Fix 3: Remove `type:"panel"` from b5() on macOS ──
-  // Relevant on both macOS and Linux builds (the pattern is in the shared bundle).
-  const panelPattern = 'n===\x60darwin\x60?{type:\x60panel\x60}:{}';
+  // ── Fix 7: type:"panel" removal from macOS ──
+  const panelPattern = 'n===`darwin`?{type:`panel`}:{}';
   if (content.includes(panelPattern)) {
-    content = content.replace(panelPattern, 'n===\x60darwin\x60?{}:{}');
+    content = content.replace(panelPattern, 'n===`darwin`?{}:{}');
     modified = true;
-    console.log(`   [fix3] ${relPath(filePath)}: removed type:"panel" for macOS`);
+    console.log(`   [fix7] ${relPath(filePath)}: removed type:"panel" for macOS`);
   } else {
-    console.log(`   [??] ${relPath(filePath)}: type:"panel" not found (may already be removed)`);
+    console.log(`   [??] ${relPath(filePath)}: type:"panel" not found`);
   }
 
   if (!modified) {
@@ -119,13 +146,12 @@ function patchMainBundle(filePath, isLinuxBuild) {
     return false;
   }
 
-  const patchMarker = "\n/* patch-linux-controls */";
-  fs.writeFileSync(filePath, content + patchMarker, "utf-8");
+  fs.writeFileSync(filePath, content + "\n/* patch-linux-controls */", "utf-8");
   console.log(`   [ok] ${relPath(filePath)}: patched`);
   return true;
 }
 
-// ─── Fix 2: Inject CSS into index.html ───────────────────────────
+// ─── Fix CSS: Input focus ──────────────────────────────────────
 
 function patchIndexHtml(asarDir) {
   const htmlPath = path.join(asarDir, "webview", "index.html");
@@ -135,7 +161,6 @@ function patchIndexHtml(asarDir) {
   }
 
   let content = fs.readFileSync(htmlPath, "utf-8");
-
   if (content.includes("patch-linux-controls")) {
     console.log("   [--] index.html: already patched");
     return false;
@@ -143,7 +168,6 @@ function patchIndexHtml(asarDir) {
 
   const focusCss = `
 <style id="linux-focus-region-fix">
-/* patch-linux-controls: force focusable elements to not be drag regions */
 input, textarea, select, [contenteditable=true], [contenteditable="true"],
 [role="textbox"], [role="searchbox"], [contenteditable="plaintext-only"] {
   -webkit-app-region: no-drag !important;
@@ -154,46 +178,30 @@ input, textarea, select, [contenteditable=true], [contenteditable="true"],
 </style>`;
 
   const insertPos = content.lastIndexOf("</head>");
-  if (insertPos === -1) {
-    console.log("   [!] index.html: no </head> tag");
-    return false;
-  }
+  if (insertPos === -1) return false;
 
   content = content.slice(0, insertPos) + focusCss + content.slice(insertPos);
   fs.writeFileSync(htmlPath, content, "utf-8");
-  console.log("   [fix2] " + relPath(htmlPath) + ": injected input focus CSS");
+  console.log("   [css] " + relPath(htmlPath) + ": injected input focus CSS");
   return true;
 }
 
-// ─── Main ────────────────────────────────────────────────────────
+// ─── Main ──────────────────────────────────────────────────
 
 function main() {
   const args = process.argv.slice(2);
-  const rawPlatform = args.find((a) =>
-    ["mac-arm64", "mac-x64", "win", "unix"].includes(a)
-  );
-
-  // Resolve: unix builds read from src/mac-x64
+  const rawPlatform = args.find((a) => ["mac-arm64", "mac-x64", "win", "unix"].includes(a));
   const targetPlatform = rawPlatform === "unix" ? "mac-x64" : rawPlatform;
   const platforms = targetPlatform ? [targetPlatform] : ["mac-arm64", "mac-x64"];
 
   console.log("\n== patch-linux-controls ==");
-
-  let mainPatched = 0;
-  let htmlPatched = 0;
+  let mainPatched = 0, htmlPatched = 0;
 
   for (const plat of platforms) {
     const buildDir = path.join(SRC_DIR, plat, "_asar", ".vite", "build");
-    if (!fs.existsSync(buildDir)) {
-      console.log(`   [--] ${plat}: no .vite/build directory`);
-      continue;
-    }
-
+    if (!fs.existsSync(buildDir)) continue;
     const files = fs.readdirSync(buildDir).filter((f) => TARGET_PATTERN.test(f));
-    if (files.length === 0) {
-      console.log(`   [--] ${plat}: no main-*.js found`);
-      continue;
-    }
+    if (files.length === 0) continue;
 
     const isLinuxBuild = rawPlatform === "unix";
 
@@ -202,7 +210,6 @@ function main() {
     }
 
     const asarDir = path.join(SRC_DIR, plat, "_asar");
-    // Fix 2 (CSS input focus) only needed on Linux
     if (isLinuxBuild && patchIndexHtml(asarDir)) htmlPatched++;
   }
 
