@@ -1,7 +1,7 @@
 {
   "name": "codex-dmg-transform",
   "productName": "Codex",
-  "version": "0.0.0",
+  "version": "26.623.42026",
   "description": "Codex Electron App - Cross-platform Build (macOS x64 + Linux)",
   "main": "src/.vite/build/bootstrap.js",
   "scripts": {
@@ -36,5 +36,9 @@
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "node-pty": "^1.1.0"
-  }
+  },
+  "codexBuildNumber": "4514",
+  "codexBuildFlavor": "prod",
+  "codexSparkleFeedUrl": "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml",
+  "codexSparklePublicKey": "mNfr1v9t63BfgDtlw4C8lRvSY6uMggIXABDOCi3tS6k="
 }
