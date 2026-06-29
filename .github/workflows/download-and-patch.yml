@@ -258,7 +258,7 @@ jobs:
   # 只依赖 detect + macOS，Linux 产物可选（有就包含）
   # ====================================================================
   release:
-    needs: [detect, build-macos-x64]
+    needs: [detect, build-macos-x64, build-linux]
     if: needs.detect.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
