@@ -10,13 +10,13 @@
  *     causing the "always on top" problem.
  *
  * Three fixes:
- *   1. x5() primary → split the win32||linux branch: Windows keeps
- *      titleBarStyle:"hidden"+overlay; Linux uses titleBarStyle:"default"
- *      (native window-manager decorations with working buttons).
- *   2. Inject CSS into index.html that forces -webkit-app-region:no-drag
- *      on every focusable element so clicks reach the text fields.
- *   3. Remove `type:"panel"` from the b5() helper on macOS (harmless on Linux,
- *      but prevents panel float issues when the DMG is opened on a Mac).
+ *   1. x5() primary → split the win32||linux branch
+ *   2. Inject CSS into index.html for input focus
+ *   3. Remove `type:"panel"` from the b5() helper on macOS
+ *   4. setWindowZoom — don't call setTitleBarOverlay on Linux (titleBarStyle:default)
+ *   5. installApplicationMenuTitleBarOverlaySync — don't set up overlay on Linux
+ *
+ * Fixes 1,2,4,5 only apply on Linux builds; fix 3 always applies.
  *
  * Usage:
  *   node scripts/patch-linux-controls.js       # applies on all platforms
@@ -64,6 +64,42 @@ function patchMainBundle(filePath, isLinuxBuild) {
       console.log(`   [fix1] ${relPath(filePath)}: split win32||linux → Linux uses titleBarStyle:default`);
     } else {
       console.log(`   [!] ${relPath(filePath)}: Linux/win32 branch not found`);
+    }
+  }
+
+  // ── Fix 4: setWindowZoom — don't call setTitleBarOverlay on Linux ──
+  if (isLinuxBuild) {
+    // Remove linux from the conditional so setTitleBarOverlay is only called on win32
+    const zoomRegex =
+      /process\.platform===\x60win32\x60\|\|process\.platform===\x60linux\x60\)&&\(this\.windowZooms\.set\(n\.id,t\),n\.setTitleBarOverlay\((\w+)\(t\)\)\)/;
+    const zoomMatch = content.match(zoomRegex);
+    if (zoomMatch) {
+      const funcName = zoomMatch[1];
+      const oldStr = zoomMatch[0];
+      const newStr =
+        'process.platform===\x60win32\x60)&&(this.windowZooms.set(n.id,t),n.setTitleBarOverlay(' + funcName + '(t)))';
+      content = content.replace(oldStr, newStr);
+      modified = true;
+      console.log(`   [fix4] ${relPath(filePath)}: removed linux from setWindowZoom overlay call`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: setWindowZoom overlay call not found`);
+    }
+  }
+
+  // ── Fix 5: installApplicationMenuTitleBarOverlaySync — skip on Linux ──
+  if (isLinuxBuild) {
+    // Remove linux from the guard so overlay is only installed on win32
+    const overlaySyncPattern =
+      'process.platform!==\x60win32\x60&&process.platform!==\x60linux\x60||t!==\x60primary\x60';
+    if (content.includes(overlaySyncPattern)) {
+      content = content.replace(
+        overlaySyncPattern,
+        'process.platform!==\x60win32\x60||t!==\x60primary\x60'
+      );
+      modified = true;
+      console.log(`   [fix5] ${relPath(filePath)}: removed linux from installApplicationMenuTitleBarOverlaySync guard`);
+    } else {
+      console.log(`   [!] ${relPath(filePath)}: installApplicationMenuTitleBarOverlaySync guard not found`);
     }
   }
 
