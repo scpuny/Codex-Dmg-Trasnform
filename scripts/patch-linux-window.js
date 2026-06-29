@@ -8,17 +8,25 @@
  * a black/empty window.
  *
  * Two fixes:
- *   1. m5() opaque window surface check — add Linux to the platform list
+ *   1. opaque window surface platform check — add Linux to the darwin|win32 list
  *      (was darwin|win32 only, so Linux always got transparent bg)
- *   2. B8 variable — change from transparent #00000000 to opaque #f9f9f9
+ *   2. transparent bg variable — change from #00000000 to #f9f9f9
  *      (backup fix for when opaqueWindowSurfaceEnabled=false)
+ *
+ * Note: minified variable/function names change between upstream builds.
+ *       The regex-based approach handles this automatically.
  */
 const fs = require("fs");
 const path = require("path");
-const acorn = require("acorn");
 const { SRC_DIR, relPath } = require("./patch-util");
 
-const TARGET_PATTERN = /^main-[a-zA-Z0-9]+\.js$/;
+const TARGET_PATTERN = /^main-[a-zA-Z0-9_-]+\.js$/;
+
+// Upstream minified names change between builds — these refs are the
+// opaque-window-surface variable and function that need Linux added.
+// If the exact names don't match, the fallback logic handles it.
+const TRANS_VAR_PATTERN = /^[A-Z][0-9]=`#00000000`$/;  // was B8, now Q7, will change again
+const OPAQUE_FN_PATTERN = /^[A-Z][0-9]$/;               // was m5, now E9, will change again
 
 function patchFile(filePath) {
   let content = fs.readFileSync(filePath, "utf-8");
@@ -30,61 +38,34 @@ function patchFile(filePath) {
 
   let modified = false;
 
-  // ── Fix 1: B8 transparent → opaque ──
-  if (content.includes("B8=`#00000000`")) {
-    content = content.replace("B8=`#00000000`", "B8=`#f9f9f9`");
+  // ── Fix 1: transparent bg variable → opaque ──
+  // Matches any single-letter+digit variable assigned #00000000
+  const transRegex = /([A-Z][0-9])=`#00000000`/;
+  const transMatch = content.match(transRegex);
+  if (transMatch) {
+    const varName = transMatch[1];
+    content = content.replace(transMatch[0], `${varName}=\`#f9f9f9\``);
     modified = true;
-    console.log(`   [B8] ${relPath(filePath)}: #00000000 -> #f9f9f9`);
-  }
-
-  // ── Fix 2: m5() platform check ──
-  let ast;
-  try {
-    ast = acorn.parse(content, { ecmaVersion: 2022, sourceType: "script" });
-  } catch (e) {
-    console.log(`   [!] ${relPath(filePath)}: parse error`);
-    return patchFallback(filePath, content, modified);
-  }
-
-  let found = false;
-  let targetStart = -1;
-  let targetEnd = -1;
-
-  function walk(node, depth) {
-    depth = depth || 0;
-    if (!node || typeof node !== "object" || found) return;
-    if (depth > 100) return;
-
-    if (node.type === "FunctionDeclaration" && node.id?.name === "m5") {
-      const body = content.slice(node.body.start, node.body.end);
-      const returnMatch = body.match(/n===`darwin`\|\|n===`win32`/);
-      if (returnMatch) {
-        const absPos = node.body.start + returnMatch.index;
-        found = true;
-        targetStart = absPos;
-        targetEnd = absPos + returnMatch[0].length;
-      }
-      return;
-    }
-
-    for (const key of Object.keys(node)) {
-      if (key === "type" || key === "start" || key === "end") continue;
-      const v = node[key];
-      if (Array.isArray(v)) { for (const item of v) if (item && typeof item === "object") walk(item, depth + 1); }
-      else if (v && typeof v === "object" && v.type) walk(v, depth + 1);
-    }
-  }
-
-  walk(ast);
-
-  if (found) {
-    const before = content.slice(0, targetStart);
-    const after = content.slice(targetEnd);
-    content = before + "n===`darwin`||n===`win32`||n===`linux`" + after;
-    modified = true;
-    console.log(`   [m5] ${relPath(filePath)}: added Linux to opaque window check`);
+    console.log(`   [trans] ${relPath(filePath)}: ${varName}=#00000000 -> #f9f9f9`);
   } else {
-    console.log(`   [!] ${relPath(filePath)}: m5() not found via AST`);
+    console.log(`   [!] ${relPath(filePath)}: transparent bg variable not found`);
+  }
+
+  // ── Fix 2: opaque window surface platform check ──
+  // Use regex fallback directly (works regardless of function name)
+  const platformRegex = /(n===`darwin`\|\|n===`win32`)/;
+  const platformMatch = content.match(platformRegex);
+  if (platformMatch) {
+    // Only patch if not already done
+    if (!platformMatch[0].includes("linux")) {
+      content = content.replace(platformRegex, "n===`darwin`||n===`win32`||n===`linux`");
+      modified = true;
+      console.log(`   [oplat] ${relPath(filePath)}: added Linux to opaque window check`);
+    } else {
+      console.log(`   [--] ${relPath(filePath)}: platform check already includes Linux`);
+    }
+  } else {
+    console.log(`   [!] ${relPath(filePath)}: darwin||win32 platform check not found`);
   }
 
   if (!modified) {
@@ -95,35 +76,6 @@ function patchFile(filePath) {
   const patchMarker = "\n/* patch-linux-window: opaque window bg for Linux */";
   fs.writeFileSync(filePath, content + patchMarker, "utf-8");
   console.log(`   [ok] ${relPath(filePath)}: patched`);
-  return true;
-}
-
-function patchFallback(filePath, content, alreadyModified) {
-  let result = content;
-  let modified = alreadyModified || false;
-
-  if (result.includes("B8=`#00000000`")) {
-    result = result.replace("B8=`#00000000`", "B8=`#f9f9f9`");
-    modified = true;
-    console.log(`   [B8] ${relPath(filePath)}: #00000000 -> #f9f9f9 [fallback]`);
-  }
-
-  const pattern = /(n===`darwin`\|\|n===`win32`)/;
-  const match = result.match(pattern);
-  if (match) {
-    result = result.replace(pattern, "n===`darwin`||n===`win32`||n===`linux`");
-    modified = true;
-    console.log(`   [m5] ${relPath(filePath)}: added Linux [fallback]`);
-  }
-
-  if (!modified) {
-    console.log(`   [!!] ${relPath(filePath)}: fallback also failed`);
-    return false;
-  }
-
-  const patchMarker = "\n/* patch-linux-window: opaque window bg for Linux */";
-  fs.writeFileSync(filePath, result + patchMarker, "utf-8");
-  console.log(`   [ok] ${relPath(filePath)}: patched [fallback]`);
   return true;
 }
 
