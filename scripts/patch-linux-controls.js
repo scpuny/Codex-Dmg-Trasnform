@@ -26,7 +26,7 @@ const fs = require("fs");
 const path = require("path");
 const { SRC_DIR, relPath } = require("./patch-util");
 
-const TARGET_PATTERN = /^main-[a-zA-Z0-9]+\.js$/;
+const TARGET_PATTERN = /^main-[a-zA-Z0-9_-]+\.js$/;
 
 // ─── Fix 1 & 3: Patch the main‑process bundle ────────────────────
 
@@ -41,21 +41,18 @@ function patchMainBundle(filePath) {
   let modified = false;
 
   // ── Fix 1: Split win32||linux → Linux gets native title bar ──
-  // Pattern (current state, may already have minimizable/maximizable):
-  //   n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:n5(r)…}
-  // Replacement:
-  //   n===`win32`?{titleBarStyle:`hidden`,titleBarOverlay:n5(r)…}:n===`linux`?{titleBarStyle:`default`…}
-
-  // Match the Linux/win32 branch — capture everything from the ternary start to the ':' after titleBarOverlay:n5(r)
+  // Match: n===`win32`||n===`linux`?{titleBarStyle:`hidden`,titleBarOverlay:XXX(r)…}
+  // where XXX is any single-char-or-digit function name (minified varies per build)
   const linuxBranchRegex =
-    /n===\x60win32\x60\|\|n===\x60linux\x60\?\{titleBarStyle:\x60hidden\x60,titleBarOverlay:n5\(r\)([^}]*)\}/;
+    /n===\x60win32\x60\|\|n===\x60linux\x60\?\{titleBarStyle:\x60hidden\x60,titleBarOverlay:(\w+)\(r\)([^}]*)\}/;
 
   const linuxBranchMatch = content.match(linuxBranchRegex);
   if (linuxBranchMatch) {
-    const captured = linuxBranchMatch[1]; // anything after titleBarOverlay:n5(r) before closing }
+    const funcName = linuxBranchMatch[1];  // e.g. n5 or m9
+    const captured = linuxBranchMatch[2]; // anything after titleBarOverlay:XXX(r) before closing }
     const oldStr = linuxBranchMatch[0];
     const newStr =
-      'n===\x60win32\x60?{titleBarStyle:\x60hidden\x60,titleBarOverlay:n5(r)' +
+      'n===\x60win32\x60?{titleBarStyle:\x60hidden\x60,titleBarOverlay:' + funcName + '(r)' +
       captured +
       '}:n===\x60linux\x60?{titleBarStyle:\x60default\x60' +
       captured +
