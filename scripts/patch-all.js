@@ -24,6 +24,7 @@ const PATCHES = [
   "patch-archive-delete.js",
   "patch-owl-features.js",
   "patch-fonts.js",
+  "patch-macos-window.js",
   "patch-linux-css.js",
   "patch-linux-window.js",
   "patch-linux-focus.js",
